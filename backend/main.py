@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.exceptions import RequestValidationError
 from services.blockchain_service import BlockchainService
 from services.database_service import DatabaseService
 from services.auth_service import create_access_token, get_current_user, get_password_hash, verify_password
@@ -12,17 +14,107 @@ from services.transaction_service import TransactionService
 from services.accounts_receivable_service import AccountsReceivableService
 from services.summary_service import SummaryService
 from services.wallet_sync_service import WalletSyncService
+from services.portfolio_service import PortfolioService
+from services.obligation_service import ObligationService
+from services.reports_service import ReportsService
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
 import json
 import logging
+import traceback
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Global Exception Handler - Melhorado com mais detalhes
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    # Log detalhado do erro
+    logger.error("=" * 80)
+    logger.error(f"GLOBAL EXCEPTION HANDLER TRIGGERED")
+    logger.error(f"Exception Type: {type(exc).__name__}")
+    logger.error(f"Exception Message: {str(exc)}")
+    logger.error(f"Request Method: {request.method}")
+    logger.error(f"Request URL: {request.url}")
+    logger.error(f"Request Path: {request.url.path}")
+    
+    # Log headers e body se disponível
+    try:
+        headers = dict(request.headers)
+        logger.error(f"Request Headers: {headers}")
+    except:
+        logger.error("Could not log request headers")
+    
+    # Log stack trace completo
+    logger.error(f"Full Stack Trace:")
+    logger.error(traceback.format_exc())
+    logger.error("=" * 80)
+    
+    # Resposta mais amigável baseada no tipo de erro
+    if "ValidationError" in str(type(exc).__name__):
+        status_code = 400
+        detail = "Dados de entrada inválidos"
+    elif "IntegrityError" in str(type(exc).__name__) or "mysql.connector" in str(type(exc)):
+        status_code = 500
+        detail = "Erro interno no banco de dados"
+    elif "ValueError" in str(type(exc).__name__):
+        status_code = 400
+        detail = f"Valor inválido: {str(exc)}"
+    else:
+        status_code = 500
+        detail = "Erro interno do servidor"
+    
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "success": False,
+            "detail": detail,
+            "error_type": type(exc).__name__,
+            "path": str(request.url.path),
+            "timestamp": traceback.format_exc().split('\n')[-2] if traceback.format_exc() else None
+        },
+        headers={"Access-Control-Allow-Origin": "*"}
+    )
+
+# Global HTTP Exception Handler
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    logger.warning(f"HTTP exception: {exc.status_code} - {exc.detail}")
+    logger.warning(f"Request: {request.method} {request.url}")
+    
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.detail,
+            "status_code": exc.status_code,
+            "path": str(request.url.path)
+        }
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Log detalhado para o desenvolvedor
+    logger.error("=" * 80)
+    logger.error(f"REQUEST VALIDATION ERROR (422) TRIGGERED")
+    logger.error(f"Request Method: {request.method}")
+    logger.error(f"Request URL: {request.url}")
+    logger.error(f"Request Path: {request.url.path}")
+    logger.error(f"Validation Errors: {exc.errors()}")
+    logger.error(f"Request Body: {exc.body}")
+    logger.error("=" * 80)
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Erro de validação: Verifique os dados enviados.",
+            "errors": exc.errors(),
+            "path": str(request.url.path)
+        },
+    )
 
 # Middleware de debug para CORS
 @app.middleware("http")
@@ -68,6 +160,125 @@ accounts_receivable_service = AccountsReceivableService(database_service)
 summary_service = SummaryService(database_service)
 wallet_sync_service = WalletSyncService(database_service)
 
+# Importar price_service para o portfolio_service
+from services.price_service import PriceService
+price_service = PriceService()
+portfolio_service = PortfolioService(database_service, price_service)
+obligation_service = ObligationService(database_service, transaction_service)
+reports_service = ReportsService(database_service)
+
+# ==================== PYDANTIC MODELS FOR OBLIGATIONS ====================
+
+class FinancialObligationCreate(BaseModel):
+    description: str
+    amount: float
+    due_date: date
+    type: str  # PAYABLE, RECEIVABLE
+    category: Optional[str] = None
+    entity_name: Optional[str] = None
+    notes: Optional[str] = None
+    recurring_rule_id: Optional[int] = None
+
+class FinancialObligationUpdate(BaseModel):
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    due_date: Optional[date] = None
+    category: Optional[str] = None
+    entity_name: Optional[str] = None
+    notes: Optional[str] = None
+    status: Optional[str] = None
+
+class RecurringRuleCreate(BaseModel):
+    description: str
+    amount: float
+    type: str  # PAYABLE, RECEIVABLE
+    category: Optional[str] = None
+    entity_name: Optional[str] = None
+    frequency: str  # DAILY, WEEKLY, MONTHLY, YEARLY
+    interval_value: int = 1
+    start_date: date
+    end_date: Optional[date] = None
+    is_active: bool = True
+
+class RecurringRuleUpdate(BaseModel):
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    category: Optional[str] = None
+    entity_name: Optional[str] = None
+    frequency: Optional[str] = None
+    interval_value: Optional[int] = None
+    end_date: Optional[date] = None
+    is_active: Optional[bool] = None
+
+class SettleObligationRequest(BaseModel):
+    account_id: int
+    settlement_date: Optional[date] = None
+
+class ObligationsSummaryResponse(BaseModel):
+    payable_next_30d: float
+    receivable_next_30d: float
+
+class FinancialObligationResponse(BaseModel):
+    id: int
+    user_id: int
+    description: str
+    amount: float
+    due_date: date
+    type: str
+    status: str
+    category: Optional[str] = None
+    entity_name: Optional[str] = None
+    notes: Optional[str] = None
+    linked_transaction_id: Optional[int] = None
+    recurring_rule_id: Optional[int] = None
+    recurring_description: Optional[str] = None
+
+class ObligationsListResponse(BaseModel):
+    obligations: List[FinancialObligationResponse]
+
+class RecurringRuleResponse(BaseModel):
+    id: int
+    user_id: int  
+    description: str
+    amount: float
+    type: str
+    category: Optional[str] = None
+    entity_name: Optional[str] = None
+    frequency: str
+    interval_value: int
+    start_date: date
+    end_date: Optional[date] = None
+    is_active: bool
+
+class RecurringRulesListResponse(BaseModel):
+    rules: List[RecurringRuleResponse]
+
+class SettlementResponse(BaseModel):
+    message: str
+    obligation_id: int
+    transaction_id: int
+
+class AccountsSummaryResponse(BaseModel):
+    accounts: List[dict]
+
+# Reports Response Models - usando dict para flexibilidade dos relatórios
+class AccountStatementResponse(BaseModel):
+    account_info: dict
+    period: dict 
+    initial_balance: float
+    final_balance: float
+    transactions: List[dict]
+
+class ExpenseAnalysisResponse(BaseModel):
+    period: dict
+    total_expenses: float
+    categories: List[dict]
+
+class MonthlyChashFlowResponse(BaseModel):
+    period: dict
+    monthly_cash_flow: List[dict]
+    summary: dict
+
 class WalletCreate(BaseModel):
     name: str
     public_address: str
@@ -110,7 +321,6 @@ class AccountCreate(BaseModel):
     name: str
     type: str  # ENUM values
     institution: Optional[str] = None
-    balance: Optional[float] = 0.00
     credit_limit: Optional[float] = 0.00
     invoice_due_day: Optional[int] = None
 
@@ -118,7 +328,6 @@ class AccountUpdate(BaseModel):
     name: Optional[str] = None
     type: Optional[str] = None
     institution: Optional[str] = None
-    balance: Optional[float] = None
     credit_limit: Optional[float] = None
     invoice_due_day: Optional[int] = None
 
@@ -183,6 +392,16 @@ class AccountsReceivableUpdate(BaseModel):
     due_date: Optional[date] = None
     status: Optional[str] = None
     expected_account_id: Optional[int] = None
+
+class AssetMovementCreate(BaseModel):
+    account_id: int
+    asset_id: int
+    movement_type: str  # 'COMPRA', 'VENDA', 'TRANSFERENCIA_ENTRADA', 'TRANSFERENCIA_SAIDA'
+    movement_date: date
+    quantity: float
+    price_per_unit: Optional[float] = None
+    fee: Optional[float] = 0.00
+    notes: Optional[str] = None
 
 class WalletAccountCreate(BaseModel):
     public_address: str
@@ -279,6 +498,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         cursor = temp_db.connection.cursor(dictionary=True)
         
         try:
+            # Primera query: buscar usuário
             cursor.execute("SELECT * FROM users WHERE user_name = %s", (form_data.username,))
             user = cursor.fetchone()
             logger.info(f"User found: {bool(user)}")
@@ -290,7 +510,11 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
                     headers={"WWW-Authenticate": "Bearer"},
                 )
             
-            # Atualizar last_login
+            # Fechar cursor e criar novo para a segunda query
+            cursor.close()
+            cursor = temp_db.connection.cursor()
+            
+            # Segunda query: atualizar last_login
             cursor.execute("UPDATE users SET last_login = NOW(), updated_at = NOW() WHERE id = %s", (user['id'],))
             temp_db.connection.commit()
             
@@ -523,6 +747,40 @@ async def get_account(account_id: int, current_user: dict = Depends(get_current_
     
     return account
 
+@app.get("/accounts/by-address/{public_address}")
+async def get_account_by_address(public_address: str, current_user: dict = Depends(get_current_user)):
+    """
+    Verifica se já existe uma conta do usuário com o endereço público fornecido
+    Endpoint para prevenir duplicação de contas de carteira
+    """
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        # Buscar conta por public_address
+        cursor = database_service.connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT * FROM accounts 
+            WHERE user_id = %s AND public_address = %s
+        """, (user_id, public_address))
+        
+        account = cursor.fetchone()
+        cursor.close()
+        
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found for this address")
+        
+        # Calcular saldo dinâmico usando account_service
+        account_with_balance = account_service.get_account_by_id(user_id, account['id'])
+        
+        return account_with_balance
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking account by address: {str(e)}")
+
 @app.put("/accounts/{account_id}")
 async def update_account(account_id: int, account: AccountUpdate, current_user: dict = Depends(get_current_user)):
     """Atualizar uma conta existente"""
@@ -577,7 +835,7 @@ async def create_account_from_wallet(wallet_data: WalletAccountCreate, current_u
         account_id = new_account["id"]
         
         # 2. Sincronizar posições on-chain imediatamente
-        sync_result = wallet_sync_service.sync_wallet_holdings(
+        sync_result = await wallet_sync_service.sync_wallet_holdings(
             user_id=user_id,
             account_id=account_id,
             public_address=wallet_data.public_address
@@ -618,7 +876,7 @@ async def sync_wallet_account(account_id: int, current_user: dict = Depends(get_
             raise HTTPException(status_code=400, detail="Account does not have a public address")
         
         # 2. Executar sincronização
-        sync_result = wallet_sync_service.sync_wallet_holdings(
+        sync_result = await wallet_sync_service.sync_wallet_holdings(
             user_id=user_id,
             account_id=account_id,
             public_address=public_address
@@ -1149,6 +1407,61 @@ async def delete_receivable(receivable_id: int, current_user: dict = Depends(get
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+# === PORTFOLIO ENDPOINTS ===
+
+@app.get("/portfolio/summary")
+async def get_portfolio_summary(current_user: dict = Depends(get_current_user)):
+    """Obter resumo do portfólio com cálculo de custo médio e P&L"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        portfolio = portfolio_service.get_portfolio_summary(user_id)
+        return portfolio
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting portfolio summary: {str(e)}")
+
+@app.post("/portfolio/movements")
+async def add_asset_movement(movement: AssetMovementCreate, current_user: dict = Depends(get_current_user)):
+    """Adicionar novo movimento de ativo"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        movement_data = movement.dict()
+        result = portfolio_service.add_asset_movement(user_id, movement_data)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/portfolio/assets/{asset_id}/movements")
+async def get_asset_movements_history(asset_id: int, current_user: dict = Depends(get_current_user)):
+    """Obter histórico de movimentos de um ativo específico"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        movements = portfolio_service.get_asset_movements_history(user_id, asset_id)
+        return movements
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting asset movements history: {str(e)}")
+
+@app.get("/summary/net-worth-history")
+async def get_net_worth_history(current_user: dict = Depends(get_current_user), days_limit: int = 365):
+    """Obter histórico de snapshots de patrimônio líquido"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        history = summary_service.get_net_worth_history(user_id, days_limit)
+        return history
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting net worth history: {str(e)}")
+
 # === ENDPOINT TEMPORÁRIO PARA DEMONSTRAÇÃO ===
 @app.get("/demo/dashboard")
 async def get_dashboard_demo():
@@ -1170,6 +1483,290 @@ async def get_cash_flow_chart_demo(period: str = "monthly"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting cash flow chart data: {str(e)}")
 
+# ==================== OBLIGATIONS & RECURRING RULES ENDPOINTS ====================
+
+# --- Financial Obligations ---
+
+# ROTA CORRIGIDA: movida para ANTES da rota dinâmica /{obligation_id}
+@app.get("/obligations/summary", response_model=ObligationsSummaryResponse)
+async def get_obligations_summary(current_user: dict = Depends(get_current_user)):
+    """Total a pagar e a receber nos próximos 30 dias"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        summary = obligation_service.get_obligations_summary_30d(user_id)
+        # LOG DE VERIFICAÇÃO CRÍTICO
+        print(f"MAIN.PY ENDPOINT: Returning summary data: {summary}")
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ROTA CORRIGIDA: movida para ANTES da rota dinâmica /{obligation_id}
+@app.get("/obligations/upcoming-summary")
+async def get_upcoming_obligations_summary(current_user: dict = Depends(get_current_user)):
+    """Resumo das próximas obrigações para o dashboard"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        summary = obligation_service.get_upcoming_summary(user_id)
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/obligations", response_model=FinancialObligationResponse)
+async def create_obligation(obligation: FinancialObligationCreate, current_user: dict = Depends(get_current_user)):
+    """Criar uma nova obrigação financeira"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        obligation_data = obligation.model_dump()
+        new_obligation = obligation_service.create_obligation(user_id, obligation_data)
+        return new_obligation
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/obligations", response_model=ObligationsListResponse)
+async def list_obligations(
+    type: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: Optional[int] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Listar obrigações do usuário com filtros opcionais"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        obligations = obligation_service.get_obligations_by_user(user_id, type, status, limit)
+        return {"obligations": obligations}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ROTA DINÂMICA: Mantida por último, como dita a boa prática.
+@app.get("/obligations/{obligation_id}", response_model=FinancialObligationResponse)
+async def get_obligation(obligation_id: int, current_user: dict = Depends(get_current_user)):
+    """Obter detalhes de uma obrigação específica"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        obligation = obligation_service.get_obligation_by_id(user_id, obligation_id)
+        if not obligation:
+            raise HTTPException(status_code=404, detail="Obligation not found")
+        return obligation
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/obligations/{obligation_id}", response_model=FinancialObligationResponse)
+async def update_obligation(
+    obligation_id: int, 
+    obligation: FinancialObligationUpdate, 
+    current_user: dict = Depends(get_current_user)
+):
+    """Atualizar uma obrigação existente"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        obligation_data = {k: v for k, v in obligation.model_dump().items() if v is not None}
+        updated_obligation = obligation_service.update_obligation(user_id, obligation_id, obligation_data)
+        return updated_obligation
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/obligations/{obligation_id}")
+async def delete_obligation(obligation_id: int, current_user: dict = Depends(get_current_user)):
+    """Deletar uma obrigação"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        success = obligation_service.delete_obligation(user_id, obligation_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Obligation not found")
+        return {"message": "Obligation deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/obligations/{obligation_id}/settle", response_model=SettlementResponse)
+async def settle_obligation(
+    obligation_id: int,
+    settle_data: SettleObligationRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Liquidar uma obrigação (função crítica)"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        settlement_result = obligation_service.settle_obligation(
+            user_id=user_id,
+            obligation_id=obligation_id,
+            account_id=settle_data.account_id,
+            settlement_date=settle_data.settlement_date
+        )
+        return settlement_result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# === ENDPOINTS PARA REGRAS DE RECORRÊNCIA ===
+
+@app.post("/recurring-rules", response_model=RecurringRuleResponse)
+async def create_recurring_rule(rule: RecurringRuleCreate, current_user: dict = Depends(get_current_user)):
+    """Criar uma nova regra de recorrência"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        rule_data = rule.model_dump()
+        new_rule = obligation_service.create_recurring_rule(user_id, rule_data)
+        return new_rule
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/recurring-rules", response_model=RecurringRulesListResponse)
+async def list_recurring_rules(is_active: Optional[bool] = None, current_user: dict = Depends(get_current_user)):
+    """Listar regras de recorrência do usuário"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        rules = obligation_service.get_recurring_rules_by_user(user_id, is_active)
+        return {"rules": rules}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/recurring-rules/{rule_id}", response_model=RecurringRuleResponse)
+async def get_recurring_rule(rule_id: int, current_user: dict = Depends(get_current_user)):
+    """Obter detalhes de uma regra de recorrência específica"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        rule = obligation_service.get_recurring_rule_by_id(user_id, rule_id)
+        if not rule:
+            raise HTTPException(status_code=404, detail="Recurring rule not found")
+        return rule
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/recurring-rules/{rule_id}", response_model=RecurringRuleResponse)
+async def update_recurring_rule(
+    rule_id: int, 
+    rule: RecurringRuleUpdate, 
+    current_user: dict = Depends(get_current_user)
+):
+    """Atualizar uma regra de recorrência existente"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        rule_data = {k: v for k, v in rule.model_dump().items() if v is not None}
+        updated_rule = obligation_service.update_recurring_rule(user_id, rule_id, rule_data)
+        return updated_rule
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/recurring-rules/{rule_id}")
+async def delete_recurring_rule(rule_id: int, current_user: dict = Depends(get_current_user)):
+    """Deletar uma regra de recorrência"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        success = obligation_service.delete_recurring_rule(user_id, rule_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Recurring rule not found")
+        return {"message": "Recurring rule deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==================== REPORTS ENDPOINTS ====================
+
+@app.get("/reports/account-statement", response_model=AccountStatementResponse)
+async def get_account_statement(
+    account_id: int,
+    start_date: date,
+    end_date: date,
+    current_user: dict = Depends(get_current_user)
+):
+    """Extrato detalhado de uma conta específica"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        statement = reports_service.get_account_statement(user_id, account_id, start_date, end_date)
+        return statement
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/expense-by-category", response_model=ExpenseAnalysisResponse)
+async def get_expense_by_category(
+    start_date: date,
+    end_date: date,
+    current_user: dict = Depends(get_current_user)
+):
+    """Análise de despesas por categoria"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        analysis = reports_service.get_expense_by_category(user_id, start_date, end_date)
+        return analysis
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/monthly-cash-flow", response_model=MonthlyChashFlowResponse)
+async def get_monthly_cash_flow(
+    start_date: date,
+    end_date: date,
+    current_user: dict = Depends(get_current_user)
+):
+    """Fluxo de caixa mensal (receitas vs despesas)"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        cash_flow = reports_service.get_monthly_cash_flow(user_id, start_date, end_date)
+        return cash_flow
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/accounts-summary", response_model=AccountsSummaryResponse)
+async def get_accounts_summary_for_reports(current_user: dict = Depends(get_current_user)):
+    """Lista de contas do usuário para seleção em relatórios"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        accounts = reports_service.get_user_accounts_summary(user_id)
+        return {"accounts": accounts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8002)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

@@ -158,6 +158,10 @@ export function TransactionsPage() {
         to_account_id: values.to_account_id ? parseInt(values.to_account_id) : null
       };
 
+      // LOG DETALHADO: Objeto enviado para debug de erro 400
+      console.log('[TRANSACTIONS_PAGE] Payload enviado para POST /transactions:');
+      console.log(JSON.stringify(formattedData, null, 2));
+
       if (editingTransaction) {
         await api.put(`/transactions/${editingTransaction.id}`, formattedData);
       } else {

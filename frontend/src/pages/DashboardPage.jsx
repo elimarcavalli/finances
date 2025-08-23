@@ -25,10 +25,13 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend
+  Legend,
+  LineChart,
+  Line
 } from 'recharts';
-import { IconTrendingUp, IconTrendingDown, IconWallet, IconCoins, IconCash, IconAlertCircle, IconPigMoney, IconReceiptTax } from '@tabler/icons-react';
+import { IconTrendingUp, IconTrendingDown, IconWallet, IconCoins, IconCash, IconAlertCircle, IconPigMoney, IconReceiptTax, IconCalendarEvent } from '@tabler/icons-react';
 import api from '../api';
+import { handleApiError } from '../utils/errorHandler';
 
 const COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff7c7c', '#8dd1e1', '#d084d0', '#87ceeb', '#ffb347'];
 
@@ -46,9 +49,13 @@ const ASSET_CLASS_LABELS = {
 export function DashboardPage() {
   const [dashboardData, setDashboardData] = useState(null);
   const [cashFlowChart, setCashFlowChart] = useState([]);
+  const [netWorthHistory, setNetWorthHistory] = useState([]);
+  const [upcomingObligations, setUpcomingObligations] = useState(null);
   const [cashFlowPeriod, setCashFlowPeriod] = useState('monthly');
   const [loading, setLoading] = useState(true);
   const [chartLoading, setChartLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [obligationsLoading, setObligationsLoading] = useState(false);
 
   const formatCurrency = (value) => {
     if (value === null || value === undefined) return 'R$ 0,00';
@@ -64,8 +71,9 @@ export function DashboardPage() {
       const dashboardRes = await api.get('/summary/dashboard');
       setDashboardData(dashboardRes.data);
       await fetchCashFlowChart(cashFlowPeriod);
+      await fetchNetWorthHistory();
     } catch (error) {
-      console.error('Erro ao carregar dados do dashboard:', error);
+      handleApiError(error, 'Erro ao carregar dados do dashboard');
     } finally {
       setLoading(false);
     }
@@ -77,9 +85,33 @@ export function DashboardPage() {
       const chartRes = await api.get(`/summary/cash-flow-chart?period=${period}`);
       setCashFlowChart(chartRes.data);
     } catch (error) {
-      console.error('Erro ao carregar gráfico de fluxo de caixa:', error);
+      handleApiError(error, 'Erro ao carregar gráfico de fluxo de caixa');
     } finally {
       setChartLoading(false);
+    }
+  };
+
+  const fetchNetWorthHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const historyRes = await api.get('/summary/net-worth-history');
+      setNetWorthHistory(historyRes.data);
+    } catch (error) {
+      handleApiError(error, 'Erro ao carregar histórico de patrimônio');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const fetchUpcomingObligations = async () => {
+    setObligationsLoading(true);
+    try {
+      const response = await api.get('/obligations/upcoming-summary');
+      setUpcomingObligations(response.data);
+    } catch (error) {
+      handleApiError(error, 'Erro ao carregar obrigações próximas');
+    } finally {
+      setObligationsLoading(false);
     }
   };
 
@@ -90,6 +122,7 @@ export function DashboardPage() {
 
   useEffect(() => {
     fetchDashboardData();
+    fetchUpcomingObligations();
   }, []);
 
   const getPieChartData = () => {
@@ -386,6 +419,141 @@ export function DashboardPage() {
           ) : (
             <Alert icon={<IconAlertCircle size={16} />} color="blue">
               Nenhuma criptomoeda encontrada no portfólio
+            </Alert>
+          )}
+        </Stack>
+      </Card>
+
+      {/* Widget Evolução do Patrimônio */}
+      <Card withBorder radius="md">
+        <Stack gap="md">
+          <Group>
+            <IconTrendingUp size={24} />
+            <Title order={4}>Evolução do Patrimônio Líquido</Title>
+          </Group>
+          
+          {historyLoading ? (
+            <Stack align="center" py="xl">
+              <Loader size="sm" />
+              <Text size="sm" c="dimmed">Carregando histórico...</Text>
+            </Stack>
+          ) : netWorthHistory.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={netWorthHistory}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="date" 
+                  tickFormatter={(value) => new Date(value).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
+                />
+                <YAxis 
+                  tickFormatter={(value) => formatCurrency(value)}
+                />
+                <Tooltip 
+                  formatter={(value) => [formatCurrency(value), 'Patrimônio Líquido']}
+                  labelFormatter={(value) => new Date(value).toLocaleDateString('pt-BR')}
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="net_worth" 
+                  stroke="#667eea" 
+                  strokeWidth={3}
+                  dot={{ fill: '#667eea', strokeWidth: 2, r: 4 }}
+                  activeDot={{ r: 6, stroke: '#667eea', strokeWidth: 2, fill: '#fff' }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <Alert icon={<IconAlertCircle size={16} />} color="blue">
+              Nenhum snapshot de patrimônio encontrado. Execute o worker de snapshots para gerar dados históricos.
+            </Alert>
+          )}
+        </Stack>
+      </Card>
+
+      {/* Widget Previsão de Fluxo de Caixa */}
+      <Card withBorder radius="md">
+        <Stack gap="md">
+          <Group>
+            <IconCalendarEvent size={24} />
+            <Title order={4}>Previsão de Fluxo de Caixa</Title>
+          </Group>
+          
+          {obligationsLoading ? (
+            <Stack align="center" py="xl">
+              <Loader size="sm" />
+              <Text size="sm" c="dimmed">Carregando previsões...</Text>
+            </Stack>
+          ) : upcomingObligations ? (
+            <Grid>
+              <Grid.Col span={{ base: 12, md: 6 }}>
+                {/* Próximas Entradas */}
+                <Card withBorder>
+                  <Stack gap="sm">
+                    <Group>
+                      <IconTrendingUp size={20} color="green" />
+                      <Text fw={500} c="green">Próximas Entradas</Text>
+                    </Group>
+                    
+                    {upcomingObligations.upcoming_receivables?.length > 0 ? (
+                      upcomingObligations.upcoming_receivables.map((obligation) => (
+                        <Group key={obligation.id} justify="space-between">
+                          <div>
+                            <Text size="sm" fw={500}>{obligation.description}</Text>
+                            <Text size="xs" c="dimmed">
+                              {new Date(obligation.due_date).toLocaleDateString('pt-BR')}
+                              {obligation.entity_name && ` • ${obligation.entity_name}`}
+                            </Text>
+                          </div>
+                          <Text size="sm" fw={500} c="green">
+                            {formatCurrency(obligation.amount)}
+                          </Text>
+                        </Group>
+                      ))
+                    ) : (
+                      <Text size="sm" c="dimmed" ta="center" py="md">
+                        Nenhuma entrada prevista
+                      </Text>
+                    )}
+                  </Stack>
+                </Card>
+              </Grid.Col>
+              
+              <Grid.Col span={{ base: 12, md: 6 }}>
+                {/* Próximas Saídas */}
+                <Card withBorder>
+                  <Stack gap="sm">
+                    <Group>
+                      <IconTrendingDown size={20} color="red" />
+                      <Text fw={500} c="red">Próximas Saídas</Text>
+                    </Group>
+                    
+                    {upcomingObligations.upcoming_payables?.length > 0 ? (
+                      upcomingObligations.upcoming_payables.map((obligation) => (
+                        <Group key={obligation.id} justify="space-between">
+                          <div>
+                            <Text size="sm" fw={500}>{obligation.description}</Text>
+                            <Text size="xs" c="dimmed">
+                              {new Date(obligation.due_date).toLocaleDateString('pt-BR')}
+                              {obligation.entity_name && ` • ${obligation.entity_name}`}
+                            </Text>
+                          </div>
+                          <Text size="sm" fw={500} c="red">
+                            {formatCurrency(obligation.amount)}
+                          </Text>
+                        </Group>
+                      ))
+                    ) : (
+                      <Text size="sm" c="dimmed" ta="center" py="md">
+                        Nenhuma saída prevista
+                      </Text>
+                    )}
+                  </Stack>
+                </Card>
+              </Grid.Col>
+            </Grid>
+          ) : (
+            <Alert icon={<IconAlertCircle size={16} />} color="blue">
+              Nenhuma obrigação próxima encontrada
             </Alert>
           )}
         </Stack>

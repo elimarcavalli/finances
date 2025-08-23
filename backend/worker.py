@@ -53,8 +53,8 @@ def main():
         except Exception as e:
             print(f"Ocorreu um erro CRÍTICO no ciclo do worker: {e}")
 
-        print("Aguardando 120 segundos para o próximo ciclo...")
-        time.sleep(120)
+        print("Aguardando 15 segundos para o próximo ciclo...")
+        time.sleep(15)
 
 if __name__ == "__main__":
     main()

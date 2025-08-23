@@ -36,38 +36,23 @@ class TransactionService:
             cursor.execute(insert_query, values)
             transaction_id = cursor.lastrowid
             
-            # 2. Atualizar saldos das contas conforme o tipo de transação
+            # 2. Validar dados de negócio conforme o tipo de transação
             transaction_type = transaction_data.get('type')
-            amount = float(transaction_data.get('amount'))
             
             if transaction_type == 'RECEITA':
-                # RECEITA: Somar valor na conta de destino
+                # RECEITA: Validar conta de destino
                 to_account_id = transaction_data.get('to_account_id')
                 if not to_account_id:
                     raise Exception("Conta de destino é obrigatória para receitas")
                 
-                update_query = """
-                    UPDATE accounts 
-                    SET balance = balance + %s 
-                    WHERE id = %s AND user_id = %s
-                """
-                cursor.execute(update_query, (amount, to_account_id, user_id))
-                
             elif transaction_type == 'DESPESA':
-                # DESPESA: Subtrair valor da conta de origem
+                # DESPESA: Validar conta de origem  
                 from_account_id = transaction_data.get('from_account_id')
                 if not from_account_id:
                     raise Exception("Conta de origem é obrigatória para despesas")
                 
-                update_query = """
-                    UPDATE accounts 
-                    SET balance = balance - %s 
-                    WHERE id = %s AND user_id = %s
-                """
-                cursor.execute(update_query, (amount, from_account_id, user_id))
-                
             elif transaction_type == 'TRANSFERENCIA':
-                # TRANSFERÊNCIA: Subtrair da origem E somar no destino
+                # TRANSFERÊNCIA: Validar contas de origem e destino
                 from_account_id = transaction_data.get('from_account_id')
                 to_account_id = transaction_data.get('to_account_id')
                 
@@ -76,25 +61,12 @@ class TransactionService:
                 
                 if from_account_id == to_account_id:
                     raise Exception("Conta de origem e destino devem ser diferentes")
-                
-                # Subtrair da conta de origem
-                update_from_query = """
-                    UPDATE accounts 
-                    SET balance = balance - %s 
-                    WHERE id = %s AND user_id = %s
-                """
-                cursor.execute(update_from_query, (amount, from_account_id, user_id))
-                
-                # Somar na conta de destino
-                update_to_query = """
-                    UPDATE accounts 
-                    SET balance = balance + %s 
-                    WHERE id = %s AND user_id = %s
-                """
-                cursor.execute(update_to_query, (amount, to_account_id, user_id))
             
             else:
                 raise Exception(f"Tipo de transação inválido: {transaction_type}")
+            
+            # NOTA: Saldos são calculados dinamicamente no account_service.py
+            # Não há mais campo 'balance' físico na tabela accounts
             
             # Se chegou até aqui, tudo deu certo - fazer commit
             self.db_service.connection.commit()

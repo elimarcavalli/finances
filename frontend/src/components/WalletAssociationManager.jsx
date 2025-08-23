@@ -27,29 +27,63 @@ export function WalletAssociationManager({ userWallets = [], onWalletAssociated,
 
     setLastProcessedAddress(address);
 
-    // LÓGICA DE RECONHECIMENTO: Verificar se a carteira já está associada
-    const isAlreadyAssociated = userWallets.some(
-      wallet => wallet.public_address.toLowerCase() === address.toLowerCase()
-    );
+    // NOVA LÓGICA: Primeiro verificar via API se a conta já existe
+    checkExistingAccount(address);
+  }, [isConnected, address, lastProcessedAddress, userWallets, isLoading, walletsLoaded]);
 
-    if (isAlreadyAssociated) {
-      // CARTEIRA JÁ ASSOCIADA: Não abrir modal, apenas mostrar notificação
-      const existingWallet = userWallets.find(
-        wallet => wallet.public_address.toLowerCase() === address.toLowerCase()
-      );
+  const checkExistingAccount = async (publicAddress) => {
+    try {
+      // Verificar se já existe conta com este endereço via API
+      const response = await api.get(`/accounts/by-address/${publicAddress}`);
       
+      // Se chegou aqui, a conta existe
+      const existingAccount = response.data;
+      
+      console.log('[WALLET_MANAGER] Conta existente encontrada:', existingAccount);
+      
+      // CARTEIRA JÁ ASSOCIADA: Não abrir modal, apenas mostrar notificação
       notifications.show({
         title: 'Carteira Reconhecida!',
-        message: `${existingWallet.wallet_name} conectada com sucesso`,
+        message: `${existingAccount.name} conectada com sucesso`,
         color: 'green',
         autoClose: 3000,
       });
-    } else {
-      // CARTEIRA NOVA: Abrir modal para nomear
-      setWalletName(''); // Limpa o campo
-      open(); // Abre o modal para nomear a carteira
+      
+    } catch (error) {
+      if (error.response?.status === 404) {
+        // Conta não existe - é uma carteira nova
+        console.log('[WALLET_MANAGER] Carteira nova detectada:', publicAddress);
+        
+        // CARTEIRA NOVA: Abrir modal para nomear
+        setWalletName(''); // Limpa o campo
+        open(); // Abre o modal para nomear a carteira
+      } else {
+        // Outro erro - log e continuar normalmente
+        console.error('[WALLET_MANAGER] Erro ao verificar conta:', error);
+        
+        // Em caso de erro na API, usar fallback com a lista local
+        const isAlreadyAssociated = userWallets.some(
+          wallet => wallet.public_address.toLowerCase() === publicAddress.toLowerCase()
+        );
+
+        if (isAlreadyAssociated) {
+          const existingWallet = userWallets.find(
+            wallet => wallet.public_address.toLowerCase() === publicAddress.toLowerCase()
+          );
+          
+          notifications.show({
+            title: 'Carteira Reconhecida!',
+            message: `${existingWallet.wallet_name} conectada com sucesso`,
+            color: 'green',
+            autoClose: 3000,
+          });
+        } else {
+          setWalletName('');
+          open();
+        }
+      }
     }
-  }, [isConnected, address, lastProcessedAddress, userWallets, isLoading, walletsLoaded, open]);
+  };
 
   const handleAssociateWallet = async () => {
     if (!walletName.trim()) {

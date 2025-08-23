@@ -223,13 +223,13 @@ class StrategyKeeper:
                 if balance_matic < 0.05:
                     print(f"WARNING: Keeper com pouco MATIC ({balance_matic:.4f})")
                 
-                print(f"💤 Aguardando 60 segundos para próximo ciclo...")
-                time.sleep(60)
+                print(f"💤 Aguardando 5 segundos para próximo ciclo...")
+                time.sleep(5)
                 
             except Exception as e:
                 print(f"💥 Erro crítico no Keeper: {e}")
                 print("⏱️  Tentando novamente em 30 segundos...")
-                time.sleep(30)
+                time.sleep(10)
 
 def main():
     try:

@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS accounts (
     name VARCHAR(255) NOT NULL,
     type ENUM('CONTA_CORRENTE', 'POUPANCA', 'CORRETORA_NACIONAL', 'CORRETORA_CRIPTO', 'CARTEIRA_CRIPTO', 'CARTAO_CREDITO', 'DINHEIRO_VIVO') NOT NULL,
     institution VARCHAR(255),
-    balance DECIMAL(20, 8) DEFAULT 0.00,
     credit_limit DECIMAL(20, 2) DEFAULT 0.00,
     invoice_due_day INT,
     public_address VARCHAR(255), -- Endereço público para carteiras cripto
@@ -40,18 +39,47 @@ CREATE TABLE IF NOT EXISTS assets (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Tabela de Posições (O que o usuário possui, onde e quanto)
+-- -- Tabela de Posições (O que o usuário possui, onde e quanto)
 CREATE TABLE IF NOT EXISTS asset_holdings (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     account_id INT NOT NULL,
     asset_id INT NOT NULL,
+    acquisition_date DATE,
     quantity DECIMAL(20, 8) NOT NULL,
     average_buy_price DECIMAL(20, 8),
-    acquisition_date DATE,
+    value_brl DECIMAL(20, 8) DEFAULT 0.0 COMMENT 'Valor do ativo em BRL baseado no preço atual';
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
     FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+);
+
+-- Crie a nova tabela de movimentos de ativos.
+CREATE TABLE asset_movements (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    account_id INT NOT NULL,
+    asset_id INT NOT NULL,
+    movement_type ENUM('COMPRA', 'VENDA', 'TRANSFERENCIA_ENTRADA', 'TRANSFERENCIA_SAIDA', 'SINCRONIZACAO') NOT NULL,
+    movement_date DATETIME NOT NULL,
+    quantity DECIMAL(20, 8) NOT NULL,
+    price_per_unit DECIMAL(20, 8) NULL, -- Preço por unidade na moeda da transação
+    fee DECIMAL(20, 8) DEFAULT 0.00, -- Taxas da operação
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+);
+
+CREATE TABLE net_worth_snapshots (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    snapshot_date DATE NOT NULL,
+    total_net_worth DECIMAL(20, 2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY (user_id, snapshot_date), -- Garante um snapshot por dia por usuário
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- Tabela de Lançamentos (O Livro-Razão Universal)
@@ -66,23 +94,51 @@ CREATE TABLE IF NOT EXISTS transactions (
     from_account_id INT NULL,
     to_account_id INT NULL,
     status ENUM('EFETIVADO', 'PENDENTE') NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (from_account_id) REFERENCES accounts(id) ON DELETE SET NULL,
     FOREIGN KEY (to_account_id) REFERENCES accounts(id) ON DELETE SET NULL
 );
 
--- Tabela de Contas a Receber
-CREATE TABLE IF NOT EXISTS accounts_receivable (
+-- Tabela unificada de obrigações financeiras.
+CREATE TABLE financial_obligations (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     description VARCHAR(255) NOT NULL,
-    debtor_name VARCHAR(255),
-    total_amount DECIMAL(20, 2) NOT NULL,
-    due_date DATE,
-    status ENUM('PENDENTE', 'PAGO', 'ATRASADO') NOT NULL DEFAULT 'PENDENTE',
-    expected_account_id INT, -- Conta onde se espera receber o valor
-    linked_transaction_id INT NULL, -- ID da transação de receita quando for pago
+    amount DECIMAL(20, 2) NOT NULL,
+    due_date DATE NOT NULL,
+    type ENUM('PAYABLE', 'RECEIVABLE') NOT NULL, -- A Pagar ou A Receber
+    status ENUM('PENDING', 'PAID', 'OVERDUE') NOT NULL DEFAULT 'PENDING',
+    category VARCHAR(100),
+    entity_name VARCHAR(255), -- Nome do credor ou devedor
+    notes TEXT,
+    linked_transaction_id INT NULL, -- Conecta à transação quando liquidada
+    recurring_rule_id INT NULL, -- Conecta à regra de recorrência que a gerou
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (expected_account_id) REFERENCES accounts(id) ON DELETE SET NULL,
     FOREIGN KEY (linked_transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
 );
+
+-- Tabela de regras de recorrência
+CREATE TABLE recurring_rules (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    description VARCHAR(255) NOT NULL,
+    amount DECIMAL(20, 2) NOT NULL,
+    type ENUM('PAYABLE', 'RECEIVABLE') NOT NULL,
+    category VARCHAR(100),
+    entity_name VARCHAR(255),
+    frequency ENUM('DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY') NOT NULL,
+    interval_value INT NOT NULL DEFAULT 1, -- Ex: a cada 2 (interval_value) meses (frequency)
+    start_date DATE NOT NULL,
+    end_date DATE NULL, -- Se for nulo, a recorrência é infinita
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Relacionamento entre obrigações e regras de recorrência
+ALTER TABLE financial_obligations
+ADD CONSTRAINT fk_recurring_rule
+FOREIGN KEY (recurring_rule_id) REFERENCES recurring_rules(id) ON DELETE SET NULL;

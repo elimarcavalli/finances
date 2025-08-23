@@ -11,7 +11,16 @@ import {
   IconCreditCard,
   IconCoins,
   IconTransfer,
-  IconReceipt
+  IconReceipt,
+  IconChartPie,
+  IconCalendarEvent,
+  IconReportAnalytics,
+  IconHexagons,
+  IconBuildingBank,
+  IconZoomCode,
+  IconTargetArrow,
+  IconPigMoney,
+  IconReceiptTax
 } from '@tabler/icons-react';
 import { Outlet, Link, useNavigate } from 'react-router-dom';
 import { useState, useEffect, useCallback } from 'react';
@@ -92,6 +101,7 @@ export function MainLayout() {
         
         {/* Patrimônio */}
         <NavLink label="Patrimônio" leftSection={<IconCoins size="1rem" />}>
+          <NavLink label="Portfólio" leftSection={<IconChartPie size="1rem" />} component={Link} to="/portfolio" />
           <NavLink label="Contas" component={Link} to="/accounts" />
           <NavLink label="Ativos" component={Link} to="/assets" />
         </NavLink>
@@ -100,15 +110,30 @@ export function MainLayout() {
         <NavLink label="Movimentações" leftSection={<IconTransfer size="1rem" />}>
           <NavLink label="Lançamentos" component={Link} to="/transactions" />
           <NavLink label="Contas a Receber" component={Link} to="/accounts-receivable" />
-          <NavLink label="Relatórios" component={Link} to="/reports" />
+          <NavLink label="Fluxo de Caixa" leftSection={<IconCalendarEvent size="1rem" />} component={Link} to="/obligations" />
         </NavLink>
         
+        {/* Relatórios */}
+        <NavLink label="Relatórios" component={Link} to="/reports" leftSection={<IconReportAnalytics size="1rem" />} />
+
         {/* Automações */}
         <NavLink label="Automações" leftSection={<IconAdjustments size="1rem" />}>
           <NavLink label="Carteiras Web3" leftSection={<IconWallet size="1rem" />} component={Link} to="/wallets" />
           <NavLink label="Strategy Vaults" leftSection={<IconLockOpen size="1rem" />} component={Link} to="/vaults" />
           <NavLink label="Estratégias" leftSection={<IconChartLine size="1rem" />} component={Link} to="/strategies" />
           <NavLink label="Backtesting" leftSection={<IconHistory size="1rem" />} component={Link} to="/backtesting" />
+        </NavLink>
+
+        {/* DeFi - Futuras Funcionalidades */}
+        <NavLink label="DeFi" leftSection={<IconHexagons size="1rem" />} defaultOpened>
+          <NavLink label="Lending & Staking" disabled leftSection={<IconBuildingBank size="1rem" />} />
+          <NavLink label="Análise On-Chain" disabled leftSection={<IconZoomCode size="1rem" />} />
+        </NavLink>
+
+        {/* Planejamento - Futuras Funcionalidades */}
+        <NavLink label="Planejamento" leftSection={<IconTargetArrow size="1rem" />} defaultOpened>
+          <NavLink label="Orçamentos" disabled leftSection={<IconPigMoney size="1rem" />} />
+          <NavLink label="Centro Fiscal (Impostos)" disabled leftSection={<IconReceiptTax size="1rem" />} />
         </NavLink>
         
         <NavLink 

@@ -1,190 +1,124 @@
-import requests
+import httpx
+import asyncio
 import time
-from typing import Optional, Dict, Any
+import logging
+from typing import Dict, List
 
-# Cache global em memória para preços
-price_cache = {}
-CACHE_DURATION = 600  # 10 minutos em segundos
+logger = logging.getLogger(__name__)
 
 class PriceService:
-    @staticmethod
-    def get_price(api_identifier: str) -> Optional[Dict[str, Any]]:
+    def __init__(self):
+        self.base_url = "https://api.coingecko.com/api/v3"
+        self._client = None
+        
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Obtém ou cria o cliente HTTP assíncrono"""
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=30.0)
+        return self._client
+    
+    async def close(self):
+        """Fecha o cliente HTTP"""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+    
+    async def get_crypto_prices_in_usd(self, api_ids: List[str]) -> Dict[str, float]:
         """
-        Busca o preço de um ativo pelo identificador da API do CoinGecko.
+        Busca preços de múltiplas criptomoedas em USD de uma só vez.
         
         Args:
-            api_identifier: Identificador do CoinGecko (ex: 'bitcoin', 'ethereum')
+            api_ids: Lista de identificadores de API do CoinGecko (ex: ['bitcoin', 'ethereum'])
             
         Returns:
-            Dict com preços em USD e BRL, ou None se houver erro
+            Dict mapeando cada ID para seu preço em USD
+            Ex: {'bitcoin': 45000.0, 'ethereum': 3500.0}
+            Retorna dict vazio em caso de erro
         """
-        current_time = time.time()
-        
-        # Verificar cache primeiro
-        if api_identifier in price_cache:
-            cached_data = price_cache[api_identifier]
-            cache_age = current_time - cached_data['timestamp']
+        if not api_ids:
+            return {}
             
-            # Se o cache tem menos de 10 minutos, usar dados em cache
-            if cache_age < CACHE_DURATION:
-                print(f"Cache hit for {api_identifier} (age: {cache_age:.1f}s)")
-                return {
-                    'usd': cached_data['usd'],
-                    'brl': cached_data['brl'],
-                    'cached': True,
-                    'cache_age': cache_age
-                }
-        
-        # Cache expirado ou não existe, buscar da API
         try:
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={api_identifier}&vs_currencies=usd,brl"
+            client = await self._get_client()
+            ids_param = ','.join(api_ids)
+            url = f"{self.base_url}/simple/price"
+            params = {
+                'ids': ids_param,
+                'vs_currencies': 'usd'
+            }
             
-            print(f"Fetching price from CoinGecko for {api_identifier}")
-            response = requests.get(url, timeout=10)
+            logger.info(f"Fetching crypto prices for: {api_ids}")
+            response = await client.get(url, params=params)
             response.raise_for_status()
             
             data = response.json()
             
-            # Verificar se o identificador existe na resposta
-            if api_identifier not in data:
-                print(f"Asset {api_identifier} not found in CoinGecko")
-                return None
+            # Processar resposta e extrair apenas os preços em USD
+            prices = {}
+            for api_id in api_ids:
+                if api_id in data and 'usd' in data[api_id]:
+                    prices[api_id] = float(data[api_id]['usd'])
+                else:
+                    logger.warning(f"Price not found for {api_id}")
+                    prices[api_id] = 0.0
             
-            asset_data = data[api_identifier]
+            logger.info(f"Successfully fetched {len(prices)} crypto prices")
+            return prices
             
-            # Verificar se temos os preços necessários
-            if 'usd' not in asset_data or 'brl' not in asset_data:
-                print(f"Price data incomplete for {api_identifier}")
-                return None
-            
-            # Atualizar cache
-            price_cache[api_identifier] = {
-                'usd': asset_data['usd'],
-                'brl': asset_data['brl'],
-                'timestamp': current_time
-            }
-            
-            return {
-                'usd': asset_data['usd'],
-                'brl': asset_data['brl'],
-                'cached': False,
-                'cache_age': 0
-            }
-            
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching price for {api_identifier}: {e}")
-            return None
-        except ValueError as e:
-            print(f"Error parsing JSON response for {api_identifier}: {e}")
-            return None
-        except Exception as e:
-            print(f"Unexpected error fetching price for {api_identifier}: {e}")
-            return None
-    
-    @staticmethod
-    def get_multiple_prices(api_identifiers: list) -> Dict[str, Optional[Dict[str, Any]]]:
-        """
-        Busca preços para múltiplos ativos de uma vez (mais eficiente).
-        
-        Args:
-            api_identifiers: Lista de identificadores do CoinGecko
-            
-        Returns:
-            Dict mapeando cada identificador para seus dados de preço
-        """
-        if not api_identifiers:
+        except httpx.RequestError as e:
+            logger.error(f"HTTP request error fetching crypto prices: {e}")
             return {}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP status error fetching crypto prices: {e.response.status_code}")
+            return {}
+        except Exception as e:
+            logger.error(f"Unexpected error fetching crypto prices: {e}")
+            return {}
+    
+    async def get_usd_to_brl_rate(self) -> float:
+        """
+        Busca a cotação USD/BRL usando o preço do Tether (USDT) em BRL.
         
-        result = {}
-        uncached_identifiers = []
-        current_time = time.time()
-        
-        # Verificar cache para cada identificador
-        for identifier in api_identifiers:
-            if identifier in price_cache:
-                cached_data = price_cache[identifier]
-                cache_age = current_time - cached_data['timestamp']
-                
-                if cache_age < CACHE_DURATION:
-                    result[identifier] = {
-                        'usd': cached_data['usd'],
-                        'brl': cached_data['brl'],
-                        'cached': True,
-                        'cache_age': cache_age
-                    }
-                    continue
+        Returns:
+            Taxa de conversão USD para BRL como float
+            Retorna 0.0 em caso de erro
+        """
+        try:
+            client = await self._get_client()
+            url = f"{self.base_url}/simple/price"
+            params = {
+                'ids': 'tether',
+                'vs_currencies': 'brl'
+            }
             
-            uncached_identifiers.append(identifier)
-        
-        # Buscar dados não cacheados da API
-        if uncached_identifiers:
-            try:
-                ids_param = ','.join(uncached_identifiers)
-                url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids_param}&vs_currencies=usd,brl"
+            logger.info("Fetching USD to BRL exchange rate via Tether")
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if 'tether' in data and 'brl' in data['tether']:
+                rate = float(data['tether']['brl'])
+                logger.info(f"USD to BRL rate: {rate}")
+                return rate
+            else:
+                logger.error("USD to BRL rate not found in response")
+                return 0.0
                 
-                print(f"Fetching prices from CoinGecko for: {uncached_identifiers}")
-                response = requests.get(url, timeout=15)
-                response.raise_for_status()
-                
-                data = response.json()
-                
-                # Processar resposta e atualizar cache
-                for identifier in uncached_identifiers:
-                    if identifier in data:
-                        asset_data = data[identifier]
-                        if 'usd' in asset_data and 'brl' in asset_data:
-                            # Atualizar cache
-                            price_cache[identifier] = {
-                                'usd': asset_data['usd'],
-                                'brl': asset_data['brl'],
-                                'timestamp': current_time
-                            }
-                            
-                            result[identifier] = {
-                                'usd': asset_data['usd'],
-                                'brl': asset_data['brl'],
-                                'cached': False,
-                                'cache_age': 0
-                            }
-                        else:
-                            result[identifier] = None
-                    else:
-                        result[identifier] = None
-                        
-            except Exception as e:
-                print(f"Error fetching multiple prices: {e}")
-                # Para identificadores que falharam, definir como None
-                for identifier in uncached_identifiers:
-                    if identifier not in result:
-                        result[identifier] = None
-        
-        return result
+        except httpx.RequestError as e:
+            logger.error(f"HTTP request error fetching USD to BRL rate: {e}")
+            return 0.0
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP status error fetching USD to BRL rate: {e.response.status_code}")
+            return 0.0
+        except Exception as e:
+            logger.error(f"Unexpected error fetching USD to BRL rate: {e}")
+            return 0.0
     
-    @staticmethod
-    def clear_cache():
-        """Limpa o cache de preços (útil para testes)"""
-        global price_cache
-        price_cache = {}
-        print("Price cache cleared")
-    
-    @staticmethod
-    def get_cache_info() -> Dict[str, Any]:
-        """Retorna informações sobre o estado do cache"""
-        current_time = time.time()
-        cache_info = []
+    async def __aenter__(self):
+        """Suporte para uso como async context manager"""
+        return self
         
-        for identifier, data in price_cache.items():
-            cache_age = current_time - data['timestamp']
-            cache_info.append({
-                'identifier': identifier,
-                'age_seconds': cache_age,
-                'expired': cache_age >= CACHE_DURATION,
-                'usd': data['usd'],
-                'brl': data['brl']
-            })
-        
-        return {
-            'total_entries': len(price_cache),
-            'cache_duration_seconds': CACHE_DURATION,
-            'entries': cache_info
-        }
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Cleanup automático quando usado como async context manager"""
+        await self.close()

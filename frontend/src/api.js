@@ -2,7 +2,7 @@ import axios from 'axios';
 import { getAuthToken, removeAuthToken } from './utils/auth';
 
 const api = axios.create({
-  baseURL: 'http://127.0.0.1:8002',
+  baseURL: 'http://127.0.0.1:8000',
 });
 
 // Interceptor para adicionar token JWT a todas as requisições

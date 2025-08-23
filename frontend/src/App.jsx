@@ -12,6 +12,9 @@ import { AccountDetailsPage } from './pages/AccountDetailsPage';
 import { AssetsPage } from './pages/AssetsPage';
 import { TransactionsPage } from './pages/TransactionsPage';
 import { AccountsReceivablePage } from './pages/AccountsReceivablePage';
+import { ObligationsPage } from './pages/ObligationsPage';
+import { PortfolioPage } from './pages/PortfolioPage';
+import { ReportsPage } from './pages/ReportsPage';
 import { ProtectedRoute } from './components/ProtectedRoute';
 
 function App() {
@@ -22,12 +25,16 @@ function App() {
         <Route path="/" element={<MainLayout />}>
           <Route index element={<DashboardPage />} />
           {/* Patrimônio */}
+          <Route path="portfolio" element={<PortfolioPage />} />
           <Route path="accounts" element={<AccountsPage />} />
           <Route path="contas/:accountId" element={<AccountDetailsPage />} />
           <Route path="assets" element={<AssetsPage />} />
           {/* Movimentações */}
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="accounts-receivable" element={<AccountsReceivablePage />} />
+          <Route path="obligations" element={<ObligationsPage />} />
+          {/* Relatórios */}
+          <Route path="reports" element={<ReportsPage />} />
           {/* Automações */}
           <Route path="wallets" element={<WalletsPage />} />
           <Route path="vaults" element={<VaultsPage />} />
