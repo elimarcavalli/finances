@@ -14,7 +14,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useDisclosure } from '@mantine/hooks';
-import { IconPlus, IconEdit, IconTrash } from '@tabler/icons-react';
+import { IconPlus, IconEdit, IconTrash, IconRefresh } from '@tabler/icons-react';
 import { useForm } from '@mantine/form';
 import api from '../api';
 
@@ -32,6 +32,8 @@ const ASSET_CLASSES = [
 export function AssetsPage() {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [updatingPrices, setUpdatingPrices] = useState(false);
+  const [updatingAsset, setUpdatingAsset] = useState(null);
   const [opened, { open, close }] = useDisclosure(false);
   const [editingAsset, setEditingAsset] = useState(null);
 
@@ -140,6 +142,88 @@ export function AssetsPage() {
     open();
   };
 
+  const updateAssetPrice = async (assetId) => {
+    setUpdatingAsset(assetId);
+    try {
+      const response = await api.post('/assets/update-prices', {
+        asset_ids: [assetId]
+      });
+      
+      notifications.show({
+        title: 'Sucesso',
+        message: `Preço atualizado! ${response.data.updated_count} ativo(s) processado(s)`,
+        color: 'green'
+      });
+      
+      fetchAssets(); // Recarregar dados
+    } catch (error) {
+      console.error('Erro ao atualizar preço:', error);
+      notifications.show({
+        title: 'Erro',
+        message: error.response?.data?.detail || 'Não foi possível atualizar o preço',
+        color: 'red'
+      });
+    } finally {
+      setUpdatingAsset(null);
+    }
+  };
+
+  const updateAllCryptoPrices = async () => {
+    setUpdatingPrices(true);
+    try {
+      const response = await api.post('/assets/update-all-crypto-prices');
+      
+      notifications.show({
+        title: 'Sucesso',
+        message: `Preços atualizados! ${response.data.updated_count} ativo(s) processado(s)`,
+        color: 'green'
+      });
+      
+      fetchAssets(); // Recarregar dados
+    } catch (error) {
+      console.error('Erro ao atualizar preços:', error);
+      notifications.show({
+        title: 'Erro',
+        message: error.response?.data?.detail || 'Não foi possível atualizar os preços',
+        color: 'red'
+      });
+    } finally {
+      setUpdatingPrices(false);
+    }
+  };
+
+  const formatPrice = (price, currency = 'BRL') => {
+    if (!price || price === 0) return '-';
+    
+    if (currency === 'BRL') {
+      return new Intl.NumberFormat('pt-BR', {
+        style: 'currency',
+        currency: 'BRL'
+      }).format(price);
+    } else {
+      return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD'
+      }).format(price);
+    }
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return '-';
+    
+    try {
+      return new Intl.DateTimeFormat('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      }).format(new Date(dateString));
+    } catch {
+      return dateString;
+    }
+  };
+
   const getAssetClassColor = (assetClass) => {
     const colors = {
       'CRIPTO': 'orange',
@@ -164,8 +248,22 @@ export function AssetsPage() {
         </Badge>
       </Table.Td>
       <Table.Td>{asset.price_api_identifier || '-'}</Table.Td>
+      <Table.Td>{formatPrice(asset.last_price_usdt, 'USD')}</Table.Td>
+      <Table.Td>{formatPrice(asset.last_price_brl, 'BRL')}</Table.Td>
+      <Table.Td>{formatDate(asset.last_price_updated_at)}</Table.Td>
       <Table.Td>
         <Group gap="xs">
+          {asset.asset_class === 'CRIPTO' && asset.price_api_identifier && (
+            <ActionIcon
+              variant="light"
+              color="green"
+              loading={updatingAsset === asset.id}
+              onClick={() => updateAssetPrice(asset.id)}
+              disabled={updatingPrices}
+            >
+              <IconRefresh size={16} />
+            </ActionIcon>
+          )}
           <ActionIcon
             variant="light"
             color="blue"
@@ -194,9 +292,20 @@ export function AssetsPage() {
             Gerencie o dicionário de ativos disponíveis no sistema
           </Text>
         </div>
-        <Button leftSection={<IconPlus size={16} />} onClick={openNewAssetModal}>
-          Novo Ativo
-        </Button>
+        <Group>
+          <Button 
+            variant="light" 
+            color="green"
+            leftSection={<IconRefresh size={16} />} 
+            onClick={updateAllCryptoPrices}
+            loading={updatingPrices}
+          >
+            Atualizar Preços de Criptoativos
+          </Button>
+          <Button leftSection={<IconPlus size={16} />} onClick={openNewAssetModal}>
+            Novo Ativo
+          </Button>
+        </Group>
       </Group>
 
       <Table striped highlightOnHover>
@@ -206,13 +315,16 @@ export function AssetsPage() {
             <Table.Th>Nome</Table.Th>
             <Table.Th>Classe</Table.Th>
             <Table.Th>ID CoinGecko</Table.Th>
+            <Table.Th>Preço (USDT)</Table.Th>
+            <Table.Th>Preço (BRL)</Table.Th>
+            <Table.Th>Última Atualização</Table.Th>
             <Table.Th>Ações</Table.Th>
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
           {loading ? (
             <Table.Tr>
-              <Table.Td colSpan={5} style={{ textAlign: 'center' }}>
+              <Table.Td colSpan={8} style={{ textAlign: 'center' }}>
                 Carregando...
               </Table.Td>
             </Table.Tr>
@@ -220,7 +332,7 @@ export function AssetsPage() {
             rows
           ) : (
             <Table.Tr>
-              <Table.Td colSpan={5} style={{ textAlign: 'center' }}>
+              <Table.Td colSpan={8} style={{ textAlign: 'center' }}>
                 Nenhum ativo encontrado
               </Table.Td>
             </Table.Tr>

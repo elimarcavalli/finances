@@ -100,16 +100,16 @@ export function MainLayout() {
         <NavLink label="Dashboard" leftSection={<IconHome size="1rem" />} component={Link} to="/" />
         
         {/* Patrimônio */}
-        <NavLink label="Patrimônio" leftSection={<IconCoins size="1rem" />}>
+        <NavLink label="Patrimônio" leftSection={<IconCoins size="1rem" />} defaultOpened>
           <NavLink label="Portfólio" leftSection={<IconChartPie size="1rem" />} component={Link} to="/portfolio" />
           <NavLink label="Contas" leftSection={<IconWallet size="1rem" />} component={Link} to="/accounts" />
           <NavLink label="Ativos" leftSection={<IconChartCandle size="1rem" />} component={Link} to="/assets" />
         </NavLink>
         
         {/* Movimentações */}
-        <NavLink label="Movimentações" leftSection={<IconTransfer size="1rem" />}>
-          <NavLink label="Lançamentos" component={Link} to="/transactions" />
-          <NavLink label="Contas a Receber" component={Link} to="/accounts-receivable" />
+        <NavLink label="Movimentações" leftSection={<IconTransfer size="1rem" />} defaultOpened>
+          <NavLink label="Lançamentos" leftSection={<IconReceipt size="1rem" />} component={Link} to="/transactions" />
+          {/* <NavLink label="Contas a Receber" leftSection={<IconReceiptTax size="1rem" />} component={Link} to="/accounts-receivable" /> */}
           <NavLink label="Fluxo de Caixa" leftSection={<IconCalendarEvent size="1rem" />} component={Link} to="/obligations" />
         </NavLink>
         
@@ -125,13 +125,13 @@ export function MainLayout() {
         </NavLink>
 
         {/* DeFi - Futuras Funcionalidades */}
-        <NavLink label="DeFi" leftSection={<IconHexagons size="1rem" />} defaultOpened>
+        <NavLink label="DeFi" leftSection={<IconHexagons size="1rem" />} >
           <NavLink label="Lending & Staking" disabled leftSection={<IconBuildingBank size="1rem" />} />
-          <NavLink label="Análise On-Chain" disabled leftSection={<IconZoomCode size="1rem" />} />
+          <NavLink label="Análises On-Chain" disabled leftSection={<IconZoomCode size="1rem" />} />
         </NavLink>
 
         {/* Planejamento - Futuras Funcionalidades */}
-        <NavLink label="Planejamento" leftSection={<IconTargetArrow size="1rem" />} defaultOpened>
+        <NavLink label="Planejamento" leftSection={<IconTargetArrow size="1rem" />} >
           <NavLink label="Orçamentos" disabled leftSection={<IconPigMoney size="1rem" />} />
           <NavLink label="Centro Fiscal (Impostos)" disabled leftSection={<IconReceiptTax size="1rem" />} />
         </NavLink>

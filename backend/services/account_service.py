@@ -131,52 +131,28 @@ class AccountService:
             cursor.close()
     
     def _calculate_crypto_wallet_balance(self, user_id: int, account_id: int) -> float:
-        """Calcula saldo de carteira cripto baseado no valor de mercado dos ativos"""
+        """
+        Calcula saldo de carteira cripto baseado no custo total de aquisição dos ativos.
+        Nova lógica: SUM(quantity * price_per_unit) para movimentos de entrada
+        """
         try:
             cursor = self.db_service.connection.cursor(dictionary=True)
             
-            # Buscar todos os asset_movements de SINCRONIZACAO desta conta
+            # Nova query baseada na especificação do claude.md
             cursor.execute("""
-                SELECT 
-                    am.asset_id,
-                    SUM(am.quantity) as total_quantity,
-                    a.price_api_identifier,
-                    a.symbol
-                FROM asset_movements am
-                JOIN assets a ON am.asset_id = a.id
-                WHERE am.user_id = %s AND am.account_id = %s 
-                AND am.movement_type = 'SINCRONIZACAO'
-                AND a.asset_class = 'CRIPTO'
-                GROUP BY am.asset_id, a.price_api_identifier, a.symbol
-                HAVING total_quantity > 0
-            """, (user_id, account_id))
+                SELECT COALESCE(SUM(quantity * price_per_unit), 0.00) as balance
+                FROM asset_movements 
+                WHERE account_id = %s 
+                AND movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO')
+            """, (account_id,))
             
-            crypto_holdings = cursor.fetchall()
+            result = cursor.fetchone()
             cursor.close()
             
-            if not crypto_holdings:
-                return 0.00
-                
-            # Usar o PortfolioService para obter preços atuais
-            portfolio_service = self._get_portfolio_service()
-            portfolio_data = portfolio_service.get_portfolio_summary(user_id)
+            balance = float(result['balance']) if result and result['balance'] is not None else 0.00
             
-            # Somar valores de mercado dos ativos desta conta específica
-            total_balance = 0.00
-            for holding in crypto_holdings:
-                asset_id = holding['asset_id']
-                
-                # Encontrar este ativo no portfolio_data
-                for portfolio_item in portfolio_data:
-                    if portfolio_item['asset_id'] == asset_id:
-                        # Adicionar ao saldo total desta carteira
-                        market_value = portfolio_item.get('market_value_brl', 0.00)
-                        total_balance += market_value
-                        print(f"[ACCOUNT_SERVICE] Conta {account_id}: {holding['symbol']} = R$ {market_value}")
-                        break
-            
-            print(f"[ACCOUNT_SERVICE] Total da carteira cripto {account_id}: R$ {total_balance}")
-            return total_balance
+            print(f"[ACCOUNT_SERVICE] Saldo custo aquisição carteira {account_id}: R$ {balance}")
+            return balance
             
         except Exception as e:
             print(f"[ACCOUNT_SERVICE] Erro ao calcular saldo cripto: {e}")

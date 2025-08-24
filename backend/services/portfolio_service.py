@@ -51,7 +51,7 @@ class PortfolioService:
             
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
-            # Query principal que agrupa movimentos por ativo
+            # Nova query que inclui preços persistidos da tabela assets
             query = """
                 SELECT 
                     am.asset_id,
@@ -59,6 +59,9 @@ class PortfolioService:
                     a.name as asset_name,
                     a.asset_class,
                     a.price_api_identifier,
+                    a.last_price_usdt,
+                    a.last_price_brl,
+                    a.last_price_updated_at,
                     SUM(CASE 
                         WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO') 
                         THEN am.quantity 
@@ -82,7 +85,8 @@ class PortfolioService:
                 FROM asset_movements am
                 JOIN assets a ON am.asset_id = a.id
                 WHERE am.user_id = %s
-                GROUP BY am.asset_id, a.symbol, a.name, a.asset_class, a.price_api_identifier
+                GROUP BY am.asset_id, a.symbol, a.name, a.asset_class, a.price_api_identifier, 
+                         a.last_price_usdt, a.last_price_brl, a.last_price_updated_at
                 HAVING (total_bought - total_sold) > 0
             """
             
@@ -92,59 +96,7 @@ class PortfolioService:
             if not positions:
                 return []
             
-            # Obter preços atuais dos ativos
-            crypto_assets = [pos for pos in positions if pos['asset_class'] == 'CRIPTO' and pos['price_api_identifier']]
-            current_prices = {}
-            
-            if crypto_assets:
-                api_ids = [asset['price_api_identifier'] for asset in crypto_assets]
-                
-                # LOG DETALHADO: Lista de price_api_identifier sendo enviada
-                print(f"[PORTFOLIO_SERVICE] Enviando para price_service: {api_ids}")
-                
-                try:
-                    # Usar o price_service de forma assíncrona dentro do contexto
-                    import asyncio
-                    
-                    # Tentar obter o loop atual ou criar um novo
-                    try:
-                        loop = asyncio.get_event_loop()
-                    except RuntimeError:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                    
-                    async def get_prices():
-                        async with self.price_service as price_svc:
-                            crypto_prices_usd = await price_svc.get_crypto_prices_in_usd(api_ids)
-                            usd_to_brl_rate = await price_svc.get_usd_to_brl_rate()
-                            return crypto_prices_usd, usd_to_brl_rate
-                    
-                    crypto_prices_usd, usd_to_brl_rate = loop.run_until_complete(get_prices())
-                    
-                    # LOG DETALHADO: Dicionário de preços retornado
-                    print(f"[PORTFOLIO_SERVICE] Preços recebidos do price_service: {crypto_prices_usd}")
-                    print(f"[PORTFOLIO_SERVICE] Taxa USD/BRL: {usd_to_brl_rate}")
-                    
-                    # VALIDAÇÃO EXTRA: Verificar se temos preços válidos
-                    if not crypto_prices_usd:
-                        print(f"[PORTFOLIO_SERVICE] ATENÇÃO: Nenhum preço foi retornado pelo price_service!")
-                    if not usd_to_brl_rate or usd_to_brl_rate <= 0:
-                        print(f"[PORTFOLIO_SERVICE] ATENÇÃO: Taxa USD/BRL inválida: {usd_to_brl_rate}")
-                        usd_to_brl_rate = 5.20  # Fallback conservador
-                    
-                    # Converter preços USD para BRL
-                    for asset in crypto_assets:
-                        api_id = asset['price_api_identifier']
-                        print(f"[PORTFOLIO_SERVICE] Asset {asset['asset_id']} ({asset['symbol']}) - price_api_identifier: {api_id}")
-                        if api_id in crypto_prices_usd:
-                            price_usd = Decimal(str(crypto_prices_usd[api_id]))
-                            current_prices[asset['asset_id']] = price_usd * Decimal(str(usd_to_brl_rate))
-                            print(f"[PORTFOLIO_SERVICE] Preço encontrado: ${price_usd} USD = R$ {current_prices[asset['asset_id']]}")
-                        else:
-                            print(f"[PORTFOLIO_SERVICE] ATENÇÃO: Preço não encontrado para {api_id}")
-                
-                except Exception as e:
-                    print(f"[PORTFOLIO_SERVICE] Erro ao obter preços: {e}")
+            print(f"[PORTFOLIO_SERVICE] Processando {len(positions)} posições usando preços persistidos")
             
             # Processar cada posição
             portfolio_summary = []
@@ -163,48 +115,85 @@ class PortfolioService:
                         print(f"Erro no cálculo de preço médio para asset {position['asset_id']}: {e}")
                         avg_price = Decimal('0.00')
                 
-                # Preço atual e valor de mercado
-                current_price = current_prices.get(position['asset_id'], Decimal('0.00'))
-                market_value = current_quantity * current_price if current_price > 0 else Decimal('0.00')
+                # Preços atuais dos preços persistidos na tabela assets
+                current_price_usdt = Decimal(str(position['last_price_usdt'] or 0))
+                current_price_brl = Decimal(str(position['last_price_brl'] or 0))
+                
+                # Valores de mercado em ambas as moedas
+                market_value_usdt = current_quantity * current_price_usdt if current_price_usdt > 0 else Decimal('0.00')
+                market_value_brl = current_quantity * current_price_brl if current_price_brl > 0 else Decimal('0.00')
                 
                 # LOG DETALHADO: Cálculo de valor por ativo
                 print(f"[PORTFOLIO_SERVICE] Calculando asset {position['asset_id']} ({position['symbol']}):")
-                print(f"  - price_api_identifier: {position['price_api_identifier']}")
                 print(f"  - current_quantity: {current_quantity}")
-                print(f"  - current_price: R$ {current_price}")
-                print(f"  - market_value: R$ {market_value}")
+                print(f"  - current_price_usdt: ${current_price_usdt}")
+                print(f"  - current_price_brl: R$ {current_price_brl}")
+                print(f"  - market_value_usdt: ${market_value_usdt}")
+                print(f"  - market_value_brl: R$ {market_value_brl}")
                 
-                # Lucro/prejuízo não realizado - com proteção defensiva
+                # Lucro/prejuízo não realizado em ambas as moedas - com proteção defensiva
                 invested_value = Decimal('0.00')
-                unrealized_pnl = Decimal('0.00')
-                unrealized_pnl_percentage = 0.00
+                unrealized_pnl_usdt = Decimal('0.00')
+                unrealized_pnl_brl = Decimal('0.00')
+                unrealized_pnl_percentage_usdt = 0.00
+                unrealized_pnl_percentage_brl = 0.00
                 
                 try:
                     if current_quantity > 0 and avg_price > 0:
                         invested_value = current_quantity * avg_price
                         
-                    if market_value > 0 and invested_value > 0:
-                        unrealized_pnl = market_value - invested_value
-                        unrealized_pnl_percentage = float((unrealized_pnl / invested_value * 100))
+                    # P&L em BRL (usando valor investido como base)
+                    if market_value_brl > 0 and invested_value > 0:
+                        unrealized_pnl_brl = market_value_brl - invested_value
+                        unrealized_pnl_percentage_brl = float((unrealized_pnl_brl / invested_value * 100))
+                    
+                    # P&L em USDT (aproximado usando preço atual)
+                    if market_value_usdt > 0 and invested_value > 0 and current_price_usdt > 0:
+                        # Converter valor investido para USDT usando preço atual (aproximação)
+                        invested_value_usdt = invested_value / current_price_brl * current_price_usdt if current_price_brl > 0 else Decimal('0.00')
+                        if invested_value_usdt > 0:
+                            unrealized_pnl_usdt = market_value_usdt - invested_value_usdt
+                            unrealized_pnl_percentage_usdt = float((unrealized_pnl_usdt / invested_value_usdt * 100))
                         
                 except (ZeroDivisionError, InvalidOperation, TypeError) as e:
                     print(f"Erro no cálculo de P&L para asset {position['asset_id']}: {e}")
-                    unrealized_pnl = Decimal('0.00')
-                    unrealized_pnl_percentage = 0.00
+                    unrealized_pnl_usdt = Decimal('0.00')
+                    unrealized_pnl_brl = Decimal('0.00')
+                    unrealized_pnl_percentage_usdt = 0.00
+                    unrealized_pnl_percentage_brl = 0.00
                 
-                # Garantir que os campos críticos estejam sempre presentes
+                # Nova estrutura enriquecida conforme claude.md especificação
                 portfolio_summary.append({
                     'asset_id': position.get('asset_id', 0),
                     'symbol': position.get('symbol', 'UNKNOWN'),
                     'name': position.get('asset_name', 'Unknown Asset'),
                     'asset_class': position.get('asset_class', 'UNKNOWN'),
                     'quantity': float(current_quantity) if current_quantity else 0.00,
-                    'average_price': float(avg_price) if avg_price else 0.00,
-                    'current_price': float(current_price) if current_price else 0.00,
-                    'market_value': float(market_value) if market_value else 0.00,
-                    'market_value_brl': float(market_value) if market_value else 0.00,  # Campo explícito para BRL
-                    'unrealized_pnl': float(unrealized_pnl) if unrealized_pnl else 0.00,
-                    'unrealized_pnl_percentage': unrealized_pnl_percentage
+                    
+                    # Preços médios de aquisição
+                    'average_price_brl': float(avg_price) if avg_price else 0.00,
+                    'average_price_usdt': float(avg_price / current_price_brl * current_price_usdt) if avg_price and current_price_brl and current_price_usdt else 0.00,
+                    
+                    # Preços atuais de mercado
+                    'current_price_brl': float(current_price_brl) if current_price_brl else 0.00,
+                    'current_price_usdt': float(current_price_usdt) if current_price_usdt else 0.00,
+                    'last_price_updated_at': position.get('last_price_updated_at'),
+                    
+                    # Valores de mercado em ambas as moedas
+                    'market_value_brl': float(market_value_brl) if market_value_brl else 0.00,
+                    'market_value_usdt': float(market_value_usdt) if market_value_usdt else 0.00,
+                    
+                    # P&L não realizado em ambas as moedas
+                    'unrealized_pnl_brl': float(unrealized_pnl_brl) if unrealized_pnl_brl else 0.00,
+                    'unrealized_pnl_usdt': float(unrealized_pnl_usdt) if unrealized_pnl_usdt else 0.00,
+                    'unrealized_pnl_percentage_brl': unrealized_pnl_percentage_brl,
+                    'unrealized_pnl_percentage_usdt': unrealized_pnl_percentage_usdt,
+                    
+                    # Campos legados para compatibilidade
+                    'current_price': float(current_price_brl) if current_price_brl else 0.00,  # Default para BRL
+                    'market_value': float(market_value_brl) if market_value_brl else 0.00,     # Default para BRL
+                    'unrealized_pnl': float(unrealized_pnl_brl) if unrealized_pnl_brl else 0.00,
+                    'unrealized_pnl_percentage': unrealized_pnl_percentage_brl
                 })
             
             return portfolio_summary

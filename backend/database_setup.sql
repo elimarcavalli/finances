@@ -149,3 +149,8 @@ ADD COLUMN from_address VARCHAR(255) NULL,
 ADD COLUMN to_address VARCHAR(255) NULL,
 ADD COLUMN block_number BIGINT NULL,
 ADD COLUMN gas_fee DECIMAL(20, 8) NULL;
+
+ALTER TABLE assets
+ADD COLUMN last_price_usdt DECIMAL(20, 8) NULL,
+ADD COLUMN last_price_brl DECIMAL(20, 8) NULL,
+ADD COLUMN last_price_updated_at DATETIME NULL;

@@ -349,6 +349,9 @@ class AssetUpdate(BaseModel):
     asset_class: Optional[str] = None
     price_api_identifier: Optional[str] = None
 
+class AssetPriceUpdate(BaseModel):
+    asset_ids: List[int]
+
 class AssetHoldingCreate(BaseModel):
     account_id: int
     asset_id: int
@@ -949,6 +952,37 @@ async def delete_asset(asset_id: int, current_user: dict = Depends(get_current_u
         return {"message": "Asset deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/assets/update-prices")
+async def update_asset_prices(
+    price_update: AssetPriceUpdate, 
+    current_user: dict = Depends(get_current_user)
+):
+    """Atualizar preços de ativos específicos"""
+    try:
+        result = await asset_service.update_asset_prices(price_update.asset_ids)
+        if not result['success'] and result['updated_count'] == 0:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Falha ao atualizar preços: {'; '.join(result['errors'])}"
+            )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
+@app.post("/assets/update-all-crypto-prices")
+async def update_all_crypto_prices(current_user: dict = Depends(get_current_user)):
+    """Atualizar preços de todos os ativos cripto"""
+    try:
+        result = await asset_service.update_all_crypto_prices()
+        if not result['success'] and result['updated_count'] == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Falha ao atualizar preços: {'; '.join(result['errors'])}"
+            )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
 # === ASSET HOLDINGS ENDPOINTS ===
 @app.post("/holdings")
