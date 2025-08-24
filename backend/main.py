@@ -153,9 +153,9 @@ strategy_service = StrategyService()
 
 # Inicializar novos serviços financeiros
 account_service = AccountService(database_service)
+transaction_service = TransactionService(database_service)
 asset_service = AssetService(database_service)
 asset_holding_service = AssetHoldingService(database_service)
-transaction_service = TransactionService(database_service)
 accounts_receivable_service = AccountsReceivableService(database_service)
 summary_service = SummaryService(database_service)
 wallet_sync_service = WalletSyncService(database_service)
@@ -323,6 +323,7 @@ class AccountCreate(BaseModel):
     institution: Optional[str] = None
     credit_limit: Optional[float] = 0.00
     invoice_due_day: Optional[int] = None
+    balance: Optional[float] = 0.00  # Saldo inicial da conta
 
 class AccountUpdate(BaseModel):
     name: Optional[str] = None
@@ -330,6 +331,11 @@ class AccountUpdate(BaseModel):
     institution: Optional[str] = None
     credit_limit: Optional[float] = None
     invoice_due_day: Optional[int] = None
+    balance: Optional[float] = None  # Para ajuste de saldo
+    public_address: Optional[str] = None  # Permitir campo público
+    
+    class Config:
+        extra = "ignore"  # Ignorar campos extras enviados pelo frontend
 
 class AssetCreate(BaseModel):
     symbol: str
@@ -784,6 +790,7 @@ async def get_account_by_address(public_address: str, current_user: dict = Depen
 @app.put("/accounts/{account_id}")
 async def update_account(account_id: int, account: AccountUpdate, current_user: dict = Depends(get_current_user)):
     """Atualizar uma conta existente"""
+    # logger.info(account_id, account, current_user)
     user_id = database_service.get_user_id_by_username(current_user['username'])
     if not user_id:
         raise HTTPException(status_code=404, detail="User not found")
@@ -847,7 +854,7 @@ async def create_account_from_wallet(wallet_data: WalletAccountCreate, current_u
         return {
             "account": updated_account,
             "sync_result": sync_result,
-            "message": "Wallet account created and synchronized successfully"
+            "message": "Carteira criada e sincronizada com sucesso"
         }
         
     except Exception as e:
@@ -1461,6 +1468,44 @@ async def get_net_worth_history(current_user: dict = Depends(get_current_user), 
         return history
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting net worth history: {str(e)}")
+
+@app.post("/portfolio/accounts/{account_id}/reconcile")
+async def reconcile_wallet_history(account_id: int, current_user: dict = Depends(get_current_user)):
+    """
+    NOVA FUNCIONALIDADE: Reconciliação profunda com histórico on-chain
+    Reconstrói completamente o histórico da carteira usando dados da blockchain
+    """
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        # Verificar se a conta existe e é uma carteira cripto
+        account = account_service.get_account_by_id(user_id, account_id)
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
+        
+        if account['type'] != 'CARTEIRA_CRIPTO':
+            raise HTTPException(status_code=400, detail="Only crypto wallets can be reconciled")
+            
+        if not account['public_address']:
+            raise HTTPException(status_code=400, detail="Wallet must have a public address to be reconciled")
+        
+        # Executar reconciliação profunda
+        result = wallet_sync_service.reconcile_wallet_history(
+            user_id=user_id,
+            account_id=account_id,
+            public_address=account['public_address']
+        )
+        
+        return {
+            "success": True,
+            "message": "Wallet reconciliation completed successfully",
+            "reconciliation_result": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error during wallet reconciliation: {str(e)}")
 
 # === ENDPOINT TEMPORÁRIO PARA DEMONSTRAÇÃO ===
 @app.get("/demo/dashboard")

@@ -105,18 +105,32 @@ class PortfolioService:
                 try:
                     # Usar o price_service de forma assíncrona dentro do contexto
                     import asyncio
+                    
+                    # Tentar obter o loop atual ou criar um novo
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
                     async def get_prices():
                         async with self.price_service as price_svc:
                             crypto_prices_usd = await price_svc.get_crypto_prices_in_usd(api_ids)
                             usd_to_brl_rate = await price_svc.get_usd_to_brl_rate()
                             return crypto_prices_usd, usd_to_brl_rate
                     
-                    loop = asyncio.get_event_loop()
                     crypto_prices_usd, usd_to_brl_rate = loop.run_until_complete(get_prices())
                     
                     # LOG DETALHADO: Dicionário de preços retornado
                     print(f"[PORTFOLIO_SERVICE] Preços recebidos do price_service: {crypto_prices_usd}")
                     print(f"[PORTFOLIO_SERVICE] Taxa USD/BRL: {usd_to_brl_rate}")
+                    
+                    # VALIDAÇÃO EXTRA: Verificar se temos preços válidos
+                    if not crypto_prices_usd:
+                        print(f"[PORTFOLIO_SERVICE] ATENÇÃO: Nenhum preço foi retornado pelo price_service!")
+                    if not usd_to_brl_rate or usd_to_brl_rate <= 0:
+                        print(f"[PORTFOLIO_SERVICE] ATENÇÃO: Taxa USD/BRL inválida: {usd_to_brl_rate}")
+                        usd_to_brl_rate = 5.20  # Fallback conservador
                     
                     # Converter preços USD para BRL
                     for asset in crypto_assets:

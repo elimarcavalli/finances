@@ -142,3 +142,10 @@ CREATE TABLE recurring_rules (
 ALTER TABLE financial_obligations
 ADD CONSTRAINT fk_recurring_rule
 FOREIGN KEY (recurring_rule_id) REFERENCES recurring_rules(id) ON DELETE SET NULL;
+
+ALTER TABLE asset_movements
+ADD COLUMN tx_hash VARCHAR(255) NULL UNIQUE,
+ADD COLUMN from_address VARCHAR(255) NULL,
+ADD COLUMN to_address VARCHAR(255) NULL,
+ADD COLUMN block_number BIGINT NULL,
+ADD COLUMN gas_fee DECIMAL(20, 8) NULL;

@@ -5,16 +5,19 @@ class TransactionService:
     def __init__(self, db_service: DatabaseService):
         self.db_service = db_service
     
-    def create_transaction(self, user_id: int, transaction_data: dict) -> dict:
+    def create_transaction(self, user_id: int, transaction_data: dict, external_cursor=None) -> dict:
         """
-        Cria uma nova transação com lógica atômica para atualização de saldos.
-        Garante que ou tudo funciona, ou nada funciona (ACID).
+        Cria uma nova transação. Pode operar de forma autônoma ou como parte de uma transação externa
+        se um 'external_cursor' for fornecido.
         """
-        cursor = self.db_service.connection.cursor(dictionary=True)
-        
+
+        # Usa o cursor externo se fornecido, senão cria um novo
+        cursor = external_cursor or self.db_service.connection.cursor(dictionary=True)
+
         try:
-            # Inicia transação no banco de dados  
-            self.db_service.connection.autocommit = False
+            # Se for uma transação autônoma, gerencia o autocommit
+            if not external_cursor:
+                self.db_service.connection.autocommit = False
             
             # 1. Inserir o novo registro na tabela transactions
             insert_query = """
@@ -30,12 +33,13 @@ class TransactionService:
                 transaction_data.get('category'),
                 transaction_data.get('from_account_id'),
                 transaction_data.get('to_account_id'),
-                'EFETIVADO'  # Transações são efetivadas automaticamente
+                'EFETIVADO'
             )
             
             cursor.execute(insert_query, values)
             transaction_id = cursor.lastrowid
             
+            # Se for uma transação autônoma, faz o commit
             # 2. Validar dados de negócio conforme o tipo de transação
             transaction_type = transaction_data.get('type')
             
@@ -68,18 +72,26 @@ class TransactionService:
             # NOTA: Saldos são calculados dinamicamente no account_service.py
             # Não há mais campo 'balance' físico na tabela accounts
             
-            # Se chegou até aqui, tudo deu certo - fazer commit
-            self.db_service.connection.commit()
-            
-            # Retornar a transação criada
-            return self.get_transaction_by_id(user_id, transaction_id)
+            # Se for uma transação autônoma, faz o commit
+            if not external_cursor:
+                self.db_service.connection.commit()
+                # Retornar a transação criada
+                return self.get_transaction_by_id(user_id, transaction_id)
+            else:
+                # Para transações externas, retorna apenas o transaction_id
+                # pois o commit será feito pela transação externa
+                return {'id': transaction_id}
             
         except Exception as err:
-            # Se algo deu errado, fazer rollback para desfazer todas as alterações
-            self.db_service.connection.rollback()
+            # Se for uma transação autônoma, faz o rollback
+            if not external_cursor:
+                self.db_service.connection.rollback()
             raise Exception(f"Erro ao criar transação: {err}")
         finally:
-            cursor.close()
+            # Se for uma transação autônoma, fecha o cursor e restaura o autocommit
+            if not external_cursor:
+                cursor.close()
+                self.db_service.connection.autocommit = True
     
     def get_transaction_by_id(self, user_id: int, transaction_id: int) -> dict:
         """Busca uma transação específica do usuário com informações detalhadas"""

@@ -21,6 +21,7 @@ import {
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
+import { notifications } from '@mantine/notifications';
 import {
   IconPlus,
   IconEye,
@@ -28,7 +29,8 @@ import {
   IconTrendingDown,
   IconCoins,
   IconAlertCircle,
-  IconRefresh
+  IconRefresh,
+  IconReload
 } from '@tabler/icons-react';
 import api from '../api';
 
@@ -49,6 +51,7 @@ export function PortfolioPage() {
   const [selectedAssetHistory, setSelectedAssetHistory] = useState([]);
   const [selectedAssetName, setSelectedAssetName] = useState('');
   const [error, setError] = useState('');
+  const [reconcilingWallets, setReconcilingWallets] = useState(false);
 
   const form = useForm({
     initialValues: {
@@ -109,10 +112,22 @@ export function PortfolioPage() {
 
   const loadAssets = useCallback(async () => {
     try {
+      console.log('[PORTFOLIO_PAGE] Carregando ativos...');
       const response = await api.get('/assets');
-      setAssets(response.data || []);
+      
+      console.log('[PORTFOLIO_PAGE] Resposta completa da API /assets:', response);
+      console.log('[PORTFOLIO_PAGE] response.data:', response.data);
+      
+      // O endpoint retorna {"assets": [...]}
+      const assetsData = response.data.assets || [];
+      
+      console.log('[PORTFOLIO_PAGE] Ativos recebidos:', assetsData);
+      console.log('[PORTFOLIO_PAGE] Quantidade de ativos:', assetsData.length);
+      
+      setAssets(assetsData);
     } catch (err) {
-      console.error('Erro ao carregar ativos:', err);
+      console.error('[PORTFOLIO_PAGE] Erro ao carregar ativos:', err);
+      setError('Erro ao carregar lista de ativos');
     }
   }, []);
 
@@ -156,6 +171,100 @@ export function PortfolioPage() {
     }
   };
 
+  const handleReprocessWallets = async () => {
+    setReconcilingWallets(true);
+    setError('');
+
+    try {
+      console.log('[PORTFOLIO_PAGE] Iniciando reprocessamento de carteiras...');
+      
+      // Filtrar apenas contas do tipo CARTEIRA_CRIPTO
+      const cryptoWallets = accounts.filter(account => account.type === 'CARTEIRA_CRIPTO' && account.public_address);
+      
+      if (cryptoWallets.length === 0) {
+        notifications.show({
+          title: 'Nenhuma Carteira Encontrada',
+          message: 'Não foram encontradas carteiras cripto com endereços públicos para reconciliar',
+          color: 'yellow',
+          autoClose: 5000,
+        });
+        return;
+      }
+
+      console.log(`[PORTFOLIO_PAGE] Processando ${cryptoWallets.length} carteiras cripto:`, cryptoWallets);
+
+      // Exibir feedback de progresso
+      notifications.show({
+        id: 'reconciliation-progress',
+        title: 'Reconciliando com a Blockchain',
+        message: `Processando ${cryptoWallets.length} carteira(s)... Isso pode levar alguns minutos.`,
+        color: 'blue',
+        autoClose: false,
+        loading: true,
+      });
+
+      let successCount = 0;
+      let errorCount = 0;
+
+      // Processar cada carteira cripto
+      for (const wallet of cryptoWallets) {
+        try {
+          console.log(`[PORTFOLIO_PAGE] Reconciliando carteira ${wallet.id}: ${wallet.name} (${wallet.public_address})`);
+          
+          const response = await api.post(`/portfolio/accounts/${wallet.id}/reconcile`);
+          
+          console.log(`[PORTFOLIO_PAGE] Reconciliação da carteira ${wallet.id} concluída:`, response.data);
+          successCount++;
+          
+        } catch (walletError) {
+          console.error(`[PORTFOLIO_PAGE] Erro na reconciliação da carteira ${wallet.id}:`, walletError);
+          errorCount++;
+        }
+      }
+
+      // Atualizar notificação de progresso
+      notifications.update({
+        id: 'reconciliation-progress',
+        title: 'Reconciliação Concluída!',
+        message: `${successCount} carteira(s) processada(s) com sucesso${errorCount > 0 ? `, ${errorCount} com erro(s)` : ''}`,
+        color: errorCount > 0 ? 'yellow' : 'green',
+        autoClose: 5000,
+        loading: false,
+      });
+
+      // Recarregar dados do portfólio
+      await loadPortfolio();
+      
+      // Feedback adicional de sucesso
+      if (successCount > 0) {
+        setTimeout(() => {
+          notifications.show({
+            title: 'Dados Atualizados!',
+            message: `O portfólio foi atualizado com os dados mais recentes da blockchain`,
+            color: 'green',
+            autoClose: 4000,
+          });
+        }, 1000);
+      }
+
+    } catch (err) {
+      console.error('[PORTFOLIO_PAGE] Erro geral no reprocessamento:', err);
+      
+      notifications.update({
+        id: 'reconciliation-progress',
+        title: 'Erro na Reconciliação',
+        message: 'Ocorreu um erro durante o reprocessamento das carteiras. Tente novamente.',
+        color: 'red',
+        autoClose: 5000,
+        loading: false,
+      });
+      
+      setError('Erro durante reconciliação das carteiras');
+    } finally {
+      setReconcilingWallets(false);
+    }
+  };
+
   const formatCurrency = (value) => {
     return new Intl.NumberFormat('pt-BR', {
       style: 'currency',
@@ -188,12 +297,18 @@ export function PortfolioPage() {
     label: `${account.name} - ${account.institution || 'N/A'}`
   }));
 
+  // Debug: Log dos assets antes de criar as options
+  console.log('[PORTFOLIO_PAGE] Estado atual de assets:', assets);
+  console.log('[PORTFOLIO_PAGE] assets é array?', Array.isArray(assets));
+  
   const assetOptions = Array.isArray(assets)
-  ? assets.map(asset => ({
-      value: asset.id.toString(),
-      label: `${asset.symbol} - ${asset.name}`
-    }))
-  : [];
+    ? assets.map(asset => ({
+        value: asset.id.toString(),
+        label: `${asset.symbol} - ${asset.name}`
+      }))
+    : [];
+  
+  console.log('[PORTFOLIO_PAGE] assetOptions geradas:', assetOptions);
 
   if (loading && portfolio.length === 0) {
     return (
@@ -209,6 +324,16 @@ export function PortfolioPage() {
       <Group justify="space-between">
         <Title order={2}>Meu Portfólio</Title>
         <Group>
+          <Button
+            variant="light"
+            color="green"
+            leftSection={<IconReload size={16} />}
+            onClick={handleReprocessWallets}
+            loading={reconcilingWallets}
+            disabled={loading}
+          >
+            Reprocessar Carteiras
+          </Button>
           <ActionIcon
             variant="light"
             color="blue"

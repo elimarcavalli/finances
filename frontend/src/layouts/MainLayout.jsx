@@ -102,8 +102,8 @@ export function MainLayout() {
         {/* Patrimônio */}
         <NavLink label="Patrimônio" leftSection={<IconCoins size="1rem" />}>
           <NavLink label="Portfólio" leftSection={<IconChartPie size="1rem" />} component={Link} to="/portfolio" />
-          <NavLink label="Contas" component={Link} to="/accounts" />
-          <NavLink label="Ativos" component={Link} to="/assets" />
+          <NavLink label="Contas" leftSection={<IconWallet size="1rem" />} component={Link} to="/accounts" />
+          <NavLink label="Ativos" leftSection={<IconChartCandle size="1rem" />} component={Link} to="/assets" />
         </NavLink>
         
         {/* Movimentações */}

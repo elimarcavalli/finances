@@ -1,11 +1,18 @@
 from .database_service import DatabaseService
+from datetime import date # Certifique-se que date está importado
+from .transaction_service import TransactionService
 import mysql.connector
+import logging
+
+# Configurar logger específico para account_service
+logger = logging.getLogger('account_service')
+logger.setLevel(logging.DEBUG)
 
 class AccountService:
     def __init__(self, db_service: DatabaseService):
         self.db_service = db_service
         self._portfolio_service = None  # Lazy initialization para evitar import circular
-    
+
     def _get_portfolio_service(self):
         """Lazy initialization do PortfolioService para evitar import circular"""
         if self._portfolio_service is None:
@@ -16,9 +23,24 @@ class AccountService:
         return self._portfolio_service
     
     def create_account(self, user_id: int, account_data: dict) -> dict:
-        """Cria uma nova conta para o usuário"""
+        """
+        Cria uma nova conta e, se houver saldo inicial, cria uma transação de 'Saldo Inicial'
+        de forma ATÔMICA (ACID).
+        """
+        logger.debug(f"[CREATE_ACCOUNT] Iniciando criação de conta para user_id={user_id}")
+        logger.debug(f"[CREATE_ACCOUNT] Dados recebidos: {account_data}")
+
+        # Instanciar o TransactionService internamente
+        transaction_service = TransactionService(self.db_service)
+
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
+            # Garantir que autocommit está habilitado antes de iniciar transação
+            self.db_service.connection.autocommit = True
+            # Iniciar transação ACID
+            self.db_service.connection.start_transaction()
+
+            # 1. Criar a conta
             query = """
                 INSERT INTO accounts (user_id, name, type, institution, credit_limit, invoice_due_day, public_address) 
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -32,16 +54,45 @@ class AccountService:
                 account_data.get('invoice_due_day'),
                 account_data.get('public_address')
             )
-            
+
             cursor.execute(query, values)
-            self.db_service.connection.commit()
-            
             account_id = cursor.lastrowid
-            return self.get_account_by_id(user_id, account_id)
+
+            # 2. Se balance > 0, criar transação de "Saldo Inicial"
+            initial_balance = float(account_data.get('balance', 0.00))
+            logger.debug(f"[CREATE_ACCOUNT] Saldo inicial extraído: {initial_balance}")
             
-        except mysql.connector.Error as err:
+            if initial_balance > 0:
+                logger.debug(f"[CREATE_ACCOUNT] Criando transação de saldo inicial de R$ {initial_balance} para conta {account_id}")
+                print(f"[ACCOUNT_SERVICE] Criando saldo inicial de R$ {initial_balance} para conta {account_id}")
+
+                transaction_data = {
+                    'description': 'Saldo Inicial',
+                    'amount': initial_balance,
+                    'transaction_date': date.today(),
+                    'type': 'RECEITA',
+                    'category': 'Saldo Inicial',
+                    'from_account_id': None,
+                    'to_account_id': account_id,
+                    'status': 'EFETIVADO'
+                }
+
+                # Chamar o transaction_service PASSANDO O CURSOR ATUAL
+                transaction_service.create_transaction(user_id, transaction_data, external_cursor=cursor)
+                print(f"[ACCOUNT_SERVICE] Transação de saldo inicial adicionada à operação.")
+
+            # 3. Commit da transação ATÔMICA
+            self.db_service.connection.commit()
+            print(f"[ACCOUNT_SERVICE] Operação atômica concluída com sucesso para conta {account_id}.")
+
+            # É seguro chamar a função get aqui, pois a transação foi commitada
+            return self.get_account_by_id(user_id, account_id)
+
+        except Exception as e:
+            # Se qualquer coisa falhar, reverter TUDO
             self.db_service.connection.rollback()
-            raise Exception(f"Erro ao criar conta: {err}")
+            print(f"[ACCOUNT_SERVICE] ERRO: Operação atômica falhou. Rollback executado. Erro: {str(e)}")
+            raise Exception(f"Erro atômico ao criar conta: {str(e)}")
         finally:
             cursor.close()
     
@@ -188,36 +239,168 @@ class AccountService:
             cursor.close()
     
     def update_account(self, user_id: int, account_id: int, account_data: dict) -> dict:
-        """Atualiza uma conta existente"""
+        """
+        Atualiza uma conta existente
+        NOVA FUNCIONALIDADE: Se 'balance' for fornecido, executa ajuste inteligente de saldo
+        """
+        logger.debug(f"[UPDATE_ACCOUNT] Iniciando atualização para account_id={account_id}, user_id={user_id}")
+        logger.debug(f"[UPDATE_ACCOUNT] Dados recebidos: {account_data}")
+        
+        # Lazy import para evitar dependência circular
+        from .transaction_service import TransactionService
+        
+        # Reset connection state to avoid residual transaction states
+        try:
+            self.db_service.connection.rollback()
+        except:
+            pass  # Safe to ignore if there's no active transaction
+            
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
-            # Construir query dinamicamente apenas com campos fornecidos
+            # Garantir que autocommit está habilitado antes de iniciar transação
+            self.db_service.connection.autocommit = True
+            # Iniciar transação ACID
+            self.db_service.connection.start_transaction()
+            
+            # NOVA LÓGICA: Processar ajuste de saldo se fornecido
+            if 'balance' in account_data:
+                target_balance = float(account_data['balance'])
+                logger.debug(f"[UPDATE_ACCOUNT] Balance detectado nos dados: {target_balance}")
+                print(f"[ACCOUNT_SERVICE] Processando ajuste de saldo para conta {account_id}: R$ {target_balance}")
+                
+                # 1. Calcular saldo atual - USAR O MESMO CURSOR DA TRANSAÇÃO
+                logger.debug(f"[UPDATE_ACCOUNT] Obtendo saldo atual da conta {account_id}")
+                
+                # Buscar dados básicos da conta usando o cursor atual
+                cursor.execute("SELECT * FROM accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
+                account_basic = cursor.fetchone()
+                
+                logger.debug(f"[UPDATE_ACCOUNT] Resultado da busca da conta: {account_basic}")
+                
+                if not account_basic:
+                    logger.error(f"[UPDATE_ACCOUNT] Conta {account_id} não encontrada para user_id {user_id}")
+                    raise Exception("Conta não encontrada ou não pertence ao usuário")
+                
+                # Calcular saldo baseado no tipo da conta usando o mesmo cursor
+                if account_basic['type'] == 'CARTEIRA_CRIPTO':
+                    # Para carteiras cripto, usar o portfolio service (não precisa da transação)
+                    current_balance = self._calculate_crypto_wallet_balance(user_id, account_id)
+                else:
+                    # Para contas tradicionais, calcular baseado nas transações usando o mesmo cursor
+                    cursor.execute("""
+                        SELECT COALESCE(SUM(
+                            CASE 
+                                WHEN t.to_account_id = %s THEN COALESCE(t.amount, 0.00)
+                                WHEN t.from_account_id = %s THEN -COALESCE(t.amount, 0.00)
+                                ELSE 0.00
+                            END
+                        ), 0.00) as balance
+                        FROM transactions t 
+                        WHERE (t.to_account_id = %s OR t.from_account_id = %s)
+                        AND t.status = 'EFETIVADO'
+                    """, (account_id, account_id, account_id, account_id))
+                    
+                    balance_result = cursor.fetchone()
+                    current_balance = float(balance_result['balance']) if balance_result and balance_result['balance'] is not None else 0.00
+                
+                logger.debug(f"[UPDATE_ACCOUNT] Saldo atual calculado: R$ {current_balance}")
+                
+                current_balance = float(current_balance)
+                delta = target_balance - current_balance
+                
+                logger.debug(f"[UPDATE_ACCOUNT] Saldo atual: R$ {current_balance}")
+                logger.debug(f"[UPDATE_ACCOUNT] Meta: R$ {target_balance}")
+                logger.debug(f"[UPDATE_ACCOUNT] Delta calculado: R$ {delta}")
+                print(f"[ACCOUNT_SERVICE] Saldo atual: R$ {current_balance}, Meta: R$ {target_balance}, Delta: R$ {delta}")
+                
+                # 2. Se há diferença, criar transação de ajuste
+                if abs(delta) > 0.01:  # Tolerância para evitar ajustes microscópicos
+                    logger.debug(f"[UPDATE_ACCOUNT] Delta significativo detectado: {abs(delta)}")
+                    transaction_service = TransactionService(self.db_service)
+                    
+                    if delta > 0:
+                        # Aumento de saldo = RECEITA
+                        logger.debug(f"[UPDATE_ACCOUNT] Criando RECEITA (suprimento)")
+                        from datetime import datetime
+                        transaction_data = {
+                            'description': 'Ajuste de Saldo (Suprimento)',
+                            'amount': delta,
+                            'transaction_date': account_data.get('adjustment_date') or datetime.now().date(),
+                            'type': 'RECEITA',
+                            'category': 'Ajuste de Saldo',
+                            'from_account_id': None,
+                            'to_account_id': account_id,
+                            'status': 'EFETIVADO'
+                        }
+                        print(f"[ACCOUNT_SERVICE] Criando RECEITA de ajuste: R$ {delta}")
+                    else:
+                        # Redução de saldo = DESPESA
+                        logger.debug(f"[UPDATE_ACCOUNT] Criando DESPESA (sangria)")
+                        from datetime import datetime
+                        transaction_data = {
+                            'description': 'Ajuste de Saldo (Sangria)',
+                            'amount': abs(delta),
+                            'transaction_date': account_data.get('adjustment_date') or datetime.now().date(),
+                            'type': 'DESPESA',
+                            'category': 'Ajuste de Saldo',
+                            'from_account_id': account_id,
+                            'to_account_id': None,
+                            'status': 'EFETIVADO'
+                        }
+                        print(f"[ACCOUNT_SERVICE] Criando DESPESA de ajuste: R$ {abs(delta)}")
+                    
+                    logger.debug(f"[UPDATE_ACCOUNT] Dados da transação: {transaction_data}")
+                    # Criar transação de ajuste usando o cursor da transação atômica
+                    transaction_service.create_transaction(user_id, transaction_data, external_cursor=cursor)
+                    logger.debug(f"[UPDATE_ACCOUNT] Transação de ajuste executada")
+                    print(f"[ACCOUNT_SERVICE] Transação de ajuste criada com sucesso")
+
+                else:
+                    logger.debug(f"[UPDATE_ACCOUNT] Delta insignificante: {delta}")
+                    print(f"[ACCOUNT_SERVICE] Delta insignificante (R$ {delta}), nenhum ajuste necessário")
+                
+                # Remover 'balance' do account_data para não afetar a atualização da conta
+                # account_data = {k: v for k, v in account_data.items() if k != 'balance'}
+            
+            # Processar campos regulares da conta
             fields = []
             values = []
             
-            allowed_fields = ['name', 'type', 'institution', 'credit_limit', 'invoice_due_day']
+            allowed_fields = ['name', 'type', 'institution', 'credit_limit', 'invoice_due_day', 'balance']
             for field in allowed_fields:
                 if field in account_data:
                     fields.append(f"{field} = %s")
                     values.append(account_data[field])
             
-            if not fields:
-                raise Exception("Nenhum campo válido para atualizar")
+            # Se há campos para atualizar, executar UPDATE
+            if fields:
+
+                values.extend([account_id, user_id])
+                query = f"UPDATE accounts SET {', '.join(fields)} WHERE id = %s AND user_id = %s"
+                
+                cursor.execute(query, values)
+                
+                if cursor.rowcount == 0:
+                    raise Exception("Conta não encontrada ou não pertence ao usuário")
+            else:
+                # Se não há campos regulares para atualizar (só balance), 
+                # ainda precisamos validar que a conta existe
+                logger.debug(f"[UPDATE_ACCOUNT] Nenhum campo regular para atualizar, validando existência da conta")
+                cursor.execute("SELECT id FROM accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
+                if not cursor.fetchone():
+                    raise Exception("Conta não encontrada ou não pertence ao usuário")
             
-            values.extend([account_id, user_id])
-            query = f"UPDATE accounts SET {', '.join(fields)} WHERE id = %s AND user_id = %s"
-            
-            cursor.execute(query, values)
+            # Commit da transação ACID
             self.db_service.connection.commit()
-            
-            if cursor.rowcount == 0:
-                raise Exception("Conta não encontrada ou não pertence ao usuário")
             
             return self.get_account_by_id(user_id, account_id)
             
         except mysql.connector.Error as err:
             self.db_service.connection.rollback()
             raise Exception(f"Erro ao atualizar conta: {err}")
+        except Exception as e:
+            self.db_service.connection.rollback()
+            raise Exception(f"Erro ao processar ajuste de saldo: {str(e)}")
         finally:
             cursor.close()
     

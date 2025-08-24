@@ -53,13 +53,14 @@ export function AccountsPage() {
   });
 
   const accountTypes = [
-    { value: 'CONTA_CORRENTE', label: 'Conta Corrente' },
-    { value: 'POUPANCA', label: 'Poupança' },
-    { value: 'CORRETORA_NACIONAL', label: 'Corretora Nacional' },
-    { value: 'CORRETORA_CRIPTO', label: 'Corretora Cripto' },
-    { value: 'CARTEIRA_CRIPTO', label: 'Carteira Cripto' },
-    { value: 'CARTAO_CREDITO', label: 'Cartão de Crédito' },
-    { value: 'DINHEIRO_VIVO', label: 'Dinheiro Vivo' }
+    { value: 'CONTA_CORRENTE', label: 'CORRENTE' },
+    { value: 'POUPANCA', label: 'POUPANCA' },
+    { value: 'CORRETORA_NACIONAL', label: 'CORRETORA NACIONAL' },
+    { value: 'CORRETORA_INTERNACIONAL', label: 'CORRETORA INTERNACIONAL' },
+    { value: 'CORRETORA_CRIPTO', label: 'CORRETORA CRIPTO' },
+    { value: 'CARTEIRA_CRIPTO', label: 'CARTEIRA CRIPTO' },
+    { value: 'CARTAO_CREDITO', label: 'CARTAO DE CRÉDITO' },
+    { value: 'DINHEIRO_VIVO', label: 'DINHEIRO VIVO' }
   ];
 
   const loadAccounts = useCallback(async () => {
@@ -88,7 +89,11 @@ export function AccountsPage() {
 
   const openEditModal = (account) => {
     setEditingAccount(account);
-    form.setValues(account);
+    // Para edição, garantir que o saldo atual seja exibido no formulário
+    form.setValues({
+      ...account,
+      balance: account.balance || 0.00  // Saldo atual calculado dinamicamente
+    });
     setModalOpened(true);
   };
 
@@ -98,9 +103,47 @@ export function AccountsPage() {
     
     try {
       if (editingAccount) {
+        values.name = values.name.endsWith(' ') ? values.name.slice(0, -1) : `${values.name} `;
+        
         await api.put(`/accounts/${editingAccount.id}`, values);
+        
+        // Feedback específico para ajuste de saldo
+        const balanceChanged = values.balance !== editingAccount.balance;
+        if (balanceChanged) {
+          notifications.show({
+            title: 'Saldo Ajustado!',
+            message: `O saldo da conta foi ajustado e uma transação de ajuste foi criada automaticamente`,
+            color: 'green',
+            autoClose: 5000,
+          });
+        } else {
+          notifications.show({
+            title: 'Conta Atualizada!',
+            message: `As informações da conta foram atualizadas com sucesso`,
+            color: 'blue',
+            autoClose: 3000,
+          });
+        }
       } else {
         await api.post('/accounts', values);
+        
+        // Feedback para nova conta
+        const hasInitialBalance = values.balance > 0;
+        if (hasInitialBalance) {
+          notifications.show({
+            title: 'Conta Criada!',
+            message: `Conta criada com saldo inicial de R$ ${values.balance.toFixed(2)}. Uma transação de "Saldo Inicial" foi registrada automaticamente.`,
+            color: 'green',
+            autoClose: 5000,
+          });
+        } else {
+          notifications.show({
+            title: 'Conta Criada!',
+            message: `Nova conta criada com sucesso`,
+            color: 'blue',
+            autoClose: 3000,
+          });
+        }
       }
 
       setModalOpened(false);
@@ -311,11 +354,15 @@ export function AccountsPage() {
             />
 
             <NumberInput
-              label="Saldo Inicial"
+              label={editingAccount ? "Saldo Atual (Ajustar)" : "Saldo Inicial"}
               placeholder="0.00"
               decimalScale={2}
               fixedDecimalScale
               {...form.getInputProps('balance')}
+              description={editingAccount ? 
+                "Altere este valor para ajustar automaticamente o saldo da conta através de transações" : 
+                "Valor inicial que a conta possui no momento da criação"
+              }
             />
 
             {['CARTEIRA_CRIPTO', 'CORRETORA_CRIPTO'].includes(form.values.type) && (

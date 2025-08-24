@@ -433,3 +433,166 @@ class WalletSyncService:
             raise Exception(f"Erro interno ao criar movimento: {e}")
         finally:
             cursor.close()
+    
+    def reconcile_wallet_history(self, user_id: int, account_id: int, public_address: str) -> Dict[str, Any]:
+        """
+        NOVA FUNCIONALIDADE: Reconciliação profunda com histórico on-chain
+        Usa a API do PolygonScan para obter TODO o histórico de transações de tokens ERC-20
+        e reconstrói completamente o histórico da carteira
+        """
+        import requests
+        import json
+        from datetime import datetime
+        
+        logger.info(f"[RECONCILE] Iniciando reconciliação profunda para carteira {public_address}")
+        
+        try:
+            # 1. Buscar histórico completo de transações de tokens na API do PolygonScan
+            polygonscan_api_key = "UJSDR6UFV3PB3514ACGV255GHPJU9K2PPN"  # Substituir pela chave real
+            api_url = "https://api.polygonscan.com/api"
+            
+            params = {
+                "module": "account",
+                "action": "tokentx",
+                "address": public_address,
+                "startblock": 0,
+                "endblock": 99999999,
+                "sort": "asc",
+                "apikey": polygonscan_api_key
+            }
+            
+            print(f"[RECONCILE] Chamando PolygonScan API para {public_address}")
+            response = requests.get(api_url, params=params, timeout=30)
+            
+            if response.status_code != 200:
+                raise Exception(f"Erro na API PolygonScan: {response.status_code}")
+                
+            data = response.json()
+            
+            if data.get("status") != "1":
+                raise Exception(f"PolygonScan retornou erro: {data.get('message', 'Unknown error')}")
+            
+            transactions = data.get("result", [])
+            print(f"[RECONCILE] {len(transactions)} transações encontradas no histórico on-chain")
+            
+            # 2. Iniciar transação ACID no banco de dados
+            cursor = self.db.connection.cursor(dictionary=True)
+            self.db.connection.autocommit = False
+            
+            try:
+                # 3. Limpar histórico antigo para evitar duplicatas
+                print(f"[RECONCILE] Limpando histórico antigo da conta {account_id}")
+                cursor.execute("DELETE FROM asset_movements WHERE account_id = %s", (account_id,))
+                deleted_count = cursor.rowcount
+                print(f"[RECONCILE] {deleted_count} movimentos antigos removidos")
+                
+                # 4. Buscar todas as carteiras do usuário para identificar transferências internas
+                cursor.execute("""
+                    SELECT public_address 
+                    FROM accounts 
+                    WHERE user_id = %s AND type = 'CARTEIRA_CRIPTO' AND public_address IS NOT NULL
+                """, (user_id,))
+                user_wallets = set(row['public_address'].lower() for row in cursor.fetchall())
+                print(f"[RECONCILE] Carteiras do usuário: {user_wallets}")
+                
+                # 5. Processar cada transação do histórico on-chain
+                processed_count = 0
+                created_assets = 0
+                
+                for tx in transactions:
+                    tx_hash = tx.get("hash")
+                    from_address = tx.get("from", "").lower()
+                    to_address = tx.get("to", "").lower()
+                    contract_address = tx.get("contractAddress", "").lower()
+                    value = tx.get("value", "0")
+                    block_number = tx.get("blockNumber")
+                    gas_fee = tx.get("gasPrice", "0")  # Aproximação da taxa de gás
+                    timestamp = tx.get("timeStamp", "0")
+                    token_name = tx.get("tokenName", "")
+                    token_symbol = tx.get("tokenSymbol", "")
+                    token_decimal = int(tx.get("tokenDecimal", "18"))
+                    
+                    # Converter timestamp para datetime
+                    tx_date = datetime.fromtimestamp(int(timestamp)) if timestamp != "0" else datetime.now()
+                    
+                    # Verificar se já existe movimento com este tx_hash (dupla segurança)
+                    cursor.execute("SELECT id FROM asset_movements WHERE tx_hash = %s", (tx_hash,))
+                    if cursor.fetchone():
+                        print(f"[RECONCILE] Transação {tx_hash} já processada, pulando...")
+                        continue
+                    
+                    # Determinar tipo de movimento
+                    current_address = public_address.lower()
+                    if to_address == current_address:
+                        movement_type = "TRANSFERENCIA_ENTRADA"
+                    elif from_address == current_address:
+                        movement_type = "TRANSFERENCIA_SAIDA"
+                    else:
+                        print(f"[RECONCILE] Transação {tx_hash} não envolve esta carteira, pulando...")
+                        continue
+                    
+                    # Buscar ou criar asset baseado no contractAddress
+                    cursor.execute("SELECT id FROM assets WHERE LOWER(contract_address) = %s", (contract_address,))
+                    asset_row = cursor.fetchone()
+                    
+                    if asset_row:
+                        asset_id = asset_row['id']
+                        print(f"[RECONCILE] Asset encontrado: {asset_id} para contrato {contract_address}")
+                    else:
+                        # Auto-discovery: criar novo asset
+                        print(f"[RECONCILE] Criando novo asset para contrato {contract_address}")
+                        cursor.execute("""
+                            INSERT INTO assets (name, symbol, asset_class, contract_address, price_api_identifier)
+                            VALUES (%s, %s, 'CRIPTO', %s, %s)
+                        """, (token_name or f"Token {token_symbol}", token_symbol, contract_address, token_symbol.lower()))
+                        asset_id = cursor.lastrowid
+                        created_assets += 1
+                        print(f"[RECONCILE] Novo asset criado: ID {asset_id}")
+                    
+                    # Calcular quantidade real (considerando decimais)
+                    quantity = Decimal(value) / Decimal(10 ** token_decimal)
+                    
+                    # Inserir novo movimento com dados on-chain completos
+                    cursor.execute("""
+                        INSERT INTO asset_movements 
+                        (user_id, account_id, asset_id, movement_type, movement_date, quantity, 
+                         tx_hash, from_address, to_address, block_number, gas_fee, notes)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        user_id, account_id, asset_id, movement_type, tx_date, float(quantity),
+                        tx_hash, from_address, to_address, int(block_number) if block_number else None,
+                        float(gas_fee) if gas_fee != "0" else None,
+                        f"Reconciliação on-chain: {token_symbol} via {tx_hash[:10]}..."
+                    ))
+                    
+                    processed_count += 1
+                    if processed_count % 50 == 0:
+                        print(f"[RECONCILE] Processadas {processed_count} transações...")
+                
+                # Commit da transação ACID
+                self.db.connection.commit()
+                print(f"[RECONCILE] Reconciliação concluída com sucesso!")
+                
+                return {
+                    "status": "success",
+                    "transactions_processed": processed_count,
+                    "assets_created": created_assets,
+                    "wallet_address": public_address,
+                    "historical_transactions": len(transactions)
+                }
+                
+            except Exception as e:
+                # Rollback em caso de erro
+                self.db.connection.rollback()
+                print(f"[RECONCILE] Erro durante processamento, fazendo rollback: {e}")
+                raise e
+            finally:
+                cursor.close()
+                self.db.connection.autocommit = True
+                
+        except Exception as e:
+            logger.error(f"Erro na reconciliação profunda: {e}")
+            raise Exception(f"Falha na reconciliação on-chain: {str(e)}")
+            
+        finally:
+            logger.info(f"[RECONCILE] Processo de reconciliação finalizado para {public_address}")

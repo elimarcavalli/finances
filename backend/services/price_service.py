@@ -44,7 +44,11 @@ class PriceService:
             url = f"{self.base_url}/simple/price"
             params = {
                 'ids': ids_param,
-                'vs_currencies': 'usd'
+                'vs_currencies': 'usd',
+                'include_market_cap': 'true',
+                'include_24hr_vol': 'true',
+                'include_24hr_change': 'true',
+                'include_last_updated_at': 'true'
             }
             
             logger.info(f"Fetching crypto prices for: {api_ids}")
@@ -52,7 +56,7 @@ class PriceService:
             response.raise_for_status()
             
             data = response.json()
-            
+
             # Processar resposta e extrair apenas os preços em USD
             prices = {}
             for api_id in api_ids:
