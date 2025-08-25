@@ -7,14 +7,50 @@ from typing import Optional
 load_dotenv()
 
 class DatabaseService:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(DatabaseService, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
     def __init__(self):
+        if self._initialized:
+            return
+        
         self.encryption_service = EncryptionService()
         self.connection = mysql.connector.connect(
             host=os.getenv("DB_HOST"),
             user=os.getenv("DB_USER"),
             password=os.getenv("DB_PASSWORD"),
-            database=os.getenv("DB_NAME")
+            database=os.getenv("DB_NAME"),
+            autocommit=False  # Controle manual de transações
         )
+        
+        # Configurar isolation level para eliminar cache de dados antigos
+        cursor = self.connection.cursor()
+        cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        cursor.close()
+        self.connection.commit()
+        
+        self._initialized = True
+
+    def ensure_connection(self):
+        """Garante que a conexão está ativa, reconectando se necessário"""
+        try:
+            if not self.connection.is_connected():
+                self.connection.reconnect(attempts=3, delay=1)
+        except Exception as e:
+            print(f"Erro ao reconectar: {e}")
+            # Recriar conexão se reconnect falhar
+            self.connection = mysql.connector.connect(
+                host=os.getenv("DB_HOST"),
+                user=os.getenv("DB_USER"),
+                password=os.getenv("DB_PASSWORD"),
+                database=os.getenv("DB_NAME"),
+                autocommit=False
+            )
 
     def add_wallet(self, name: str, public_address: str, private_key: Optional[str]):
         """Criptografa a chave privada (se fornecida) e a salva no banco de dados."""

@@ -114,8 +114,8 @@ class AccountService:
             if not result:
                 return None
             
-            # Calcular saldo baseado no tipo da conta
-            if result['type'] == 'CARTEIRA_CRIPTO':
+            # Calcular saldo baseado no tipo da conta(CARTEIRA_CRIPTO ou CORRETORA_CRIPTO)
+            if result['type'] == 'CARTEIRA_CRIPTO' or result['type'] == 'CORRETORA_CRIPTO':
                 # Para carteiras cripto, saldo = soma dos valores de mercado dos ativos
                 balance = self._calculate_crypto_wallet_balance(user_id, account_id)
             else:
@@ -140,10 +140,29 @@ class AccountService:
             
             # Nova query baseada na especificação do claude.md
             cursor.execute("""
-                SELECT COALESCE(SUM(quantity * price_per_unit), 0.00) as balance
-                FROM asset_movements 
-                WHERE account_id = %s 
-                AND movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO')
+                with summary as (
+				SELECT 
+                    a.last_price_brl,
+                    SUM(CASE 
+                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO') 
+                        THEN am.quantity 
+                        ELSE 0 
+                    END) as total_bought,
+                    SUM(CASE 
+                        WHEN am.movement_type IN ('VENDA', 'TRANSFERENCIA_SAIDA') 
+                        THEN am.quantity 
+                        ELSE 0 
+                    END) as total_sold
+                FROM asset_movements am
+                JOIN assets a ON am.asset_id = a.id
+                WHERE am.account_id = %s
+                	and a.asset_class in('CRIPTO')
+                GROUP BY am.asset_id, a.symbol, a.name, a.asset_class, a.price_api_identifier, 
+                         a.last_price_usdt, a.last_price_brl, a.last_price_updated_at
+                HAVING (total_bought - total_sold) > 0
+				)
+				SELECT ROUND(sum((total_bought - total_sold) * last_price_brl),2) as balance
+				FROM summary 
             """, (account_id,))
             
             result = cursor.fetchone()
@@ -200,7 +219,7 @@ class AccountService:
             
             # Calcular saldo para cada conta baseado no tipo
             for result in results:
-                if result['type'] == 'CARTEIRA_CRIPTO':
+                if result['type'] == 'CARTEIRA_CRIPTO' or result['type'] == 'CORRETORA_CRIPTO':
                     # Para carteiras cripto, saldo = soma dos valores de mercado dos ativos
                     result['balance'] = self._calculate_crypto_wallet_balance(user_id, result['id'])
                 else:
@@ -258,7 +277,7 @@ class AccountService:
                     raise Exception("Conta não encontrada ou não pertence ao usuário")
                 
                 # Calcular saldo baseado no tipo da conta usando o mesmo cursor
-                if account_basic['type'] == 'CARTEIRA_CRIPTO':
+                if account_basic['type'] == 'CARTEIRA_CRIPTO' or account_basic['type'] == 'CORRETORA_CRIPTO':
                     # Para carteiras cripto, usar o portfolio service (não precisa da transação)
                     current_balance = self._calculate_crypto_wallet_balance(user_id, account_id)
                 else:

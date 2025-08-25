@@ -59,12 +59,34 @@ class PriceService:
 
             # Processar resposta e extrair apenas os preços em USD
             prices = {}
+            logger.info(f"[PRICE_SERVICE] Resposta da API: {data}")
+            
             for api_id in api_ids:
                 if api_id in data and 'usd' in data[api_id]:
-                    prices[api_id] = float(data[api_id]['usd'])
+                    raw_price = data[api_id]['usd']
+                    logger.info(f"[PRICE_SERVICE] Preço bruto da API para {api_id}: {raw_price} (tipo: {type(raw_price)})")
+                    
+                    # USAR DECIMAL para máxima precisão em valores muito pequenos
+                    from decimal import Decimal, getcontext
+                    getcontext().prec = 50  # Aumentar precisão para 50 dígitos
+                    
+                    try:
+                        usd_price_decimal = Decimal(str(raw_price))
+                        usd_price = float(usd_price_decimal)
+                        
+                        logger.info(f"[PRICE_SERVICE] Preço após conversão para {api_id}: ${usd_price} (Decimal: {usd_price_decimal})")
+                        
+                        # PROTEÇÃO: Apenas incluir no resultado se o preço for válido e maior que zero
+                        if usd_price_decimal > 0:
+                            prices[api_id] = usd_price
+                            logger.info(f"[PRICE_SERVICE] Preço válido para {api_id}: ${usd_price}")
+                        else:
+                            logger.warning(f"[PRICE_SERVICE] Preço zero/inválido para {api_id}: {usd_price}")
+                    except Exception as e:
+                        logger.error(f"[PRICE_SERVICE] Erro ao converter preço para {api_id}: {e}")
                 else:
-                    logger.warning(f"Price not found for {api_id}")
-                    prices[api_id] = 0.0
+                    logger.warning(f"[PRICE_SERVICE] Preço não encontrado na API para {api_id}")
+                    # NÃO adicionar ao dict prices - deixar que o asset_service trate a ausência
             
             logger.info(f"Successfully fetched {len(prices)} crypto prices")
             return prices

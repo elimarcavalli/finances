@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.exceptions import RequestValidationError
 from services.blockchain_service import BlockchainService
 from services.database_service import DatabaseService
-from services.auth_service import create_access_token, get_current_user, get_password_hash, verify_password
+from services.auth_service import create_access_token, get_current_user, get_password_hash, verify_password, ACCESS_TOKEN_EXPIRE_MINUTES
 from services.strategy_service import StrategyService
 from services.account_service import AccountService
 from services.asset_service import AssetService
@@ -19,7 +19,7 @@ from services.obligation_service import ObligationService
 from services.reports_service import ReportsService
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import date
+from datetime import date, datetime
 import json
 import logging
 import traceback
@@ -342,12 +342,17 @@ class AssetCreate(BaseModel):
     name: str
     asset_class: str  # ENUM values
     price_api_identifier: Optional[str] = None
+    last_price_usdt: Optional[float] = None
+    last_price_brl: Optional[float] = None
 
 class AssetUpdate(BaseModel):
     symbol: Optional[str] = None
     name: Optional[str] = None
     asset_class: Optional[str] = None
     price_api_identifier: Optional[str] = None
+    last_price_usdt: Optional[float] = None
+    last_price_brl: Optional[float] = None
+    icon_url: Optional[str] = None
 
 class AssetPriceUpdate(BaseModel):
     asset_ids: List[int]
@@ -410,6 +415,16 @@ class AssetMovementCreate(BaseModel):
     quantity: float
     price_per_unit: Optional[float] = None
     fee: Optional[float] = 0.00
+    notes: Optional[str] = None
+
+class AssetMovementUpdate(BaseModel):
+    account_id: Optional[int] = None
+    asset_id: Optional[int] = None
+    movement_type: Optional[str] = None
+    movement_date: Optional[date] = None
+    quantity: Optional[float] = None
+    price_per_unit: Optional[float] = None
+    fee: Optional[float] = None
     notes: Optional[str] = None
 
 class WalletAccountCreate(BaseModel):
@@ -502,9 +517,8 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     try:
         logger.info(f"Login attempt for user: {form_data.username}")
         
-        # Usar uma nova instância do database service para evitar conflitos
-        temp_db = DatabaseService()
-        cursor = temp_db.connection.cursor(dictionary=True)
+        # Usar a instância global do database service (agora é singleton)
+        cursor = database_service.connection.cursor(dictionary=True)
         
         try:
             # Primera query: buscar usuário
@@ -521,17 +535,22 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             
             # Fechar cursor e criar novo para a segunda query
             cursor.close()
-            cursor = temp_db.connection.cursor()
+            cursor = database_service.connection.cursor()
             
             # Segunda query: atualizar last_login
             cursor.execute("UPDATE users SET last_login = NOW(), updated_at = NOW() WHERE id = %s", (user['id'],))
-            temp_db.connection.commit()
+            database_service.connection.commit()
             
-            access_token = create_access_token(data={"sub": user['user_name']})
+            from datetime import timedelta
+            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            access_token = create_access_token(
+                data={"sub": user['user_name']}, 
+                expires_delta=access_token_expires
+            )
             return {"access_token": access_token, "token_type": "bearer"}
         finally:
             cursor.close()
-            temp_db.connection.close()
+            # Não fechar a conexão global (singleton)
             
     except HTTPException:
         # Re-raise HTTPException para manter o status code correto
@@ -878,19 +897,50 @@ async def sync_wallet_account(account_id: int, current_user: dict = Depends(get_
         if not account:
             raise HTTPException(status_code=404, detail="Account not found")
         
-        if account["type"] != "CARTEIRA_CRIPTO":
-            raise HTTPException(status_code=400, detail="Account is not a crypto wallet")
-        
-        public_address = account.get("public_address")
-        if not public_address:
-            raise HTTPException(status_code=400, detail="Account does not have a public address")
-        
-        # 2. Executar sincronização
-        sync_result = await wallet_sync_service.sync_wallet_holdings(
-            user_id=user_id,
-            account_id=account_id,
-            public_address=public_address
-        )
+        if account["type"] == "CARTEIRA_CRIPTO":
+            # Para CARTEIRA_CRIPTO: Sincronização tradicional com blockchain
+            public_address = account.get("public_address")
+            if not public_address:
+                raise HTTPException(status_code=400, detail="Account does not have a public address")
+            
+            # 2. Executar sincronização com blockchain
+            sync_result = await wallet_sync_service.sync_wallet_holdings(
+                user_id=user_id,
+                account_id=account_id,
+                public_address=public_address
+            )
+            
+        elif account["type"] == "CORRETORA_CRIPTO":
+            # Para CORRETORA_CRIPTO: Atualizar preços dos assets relacionados à conta
+            # 1. Buscar assets cripto relacionados a esta conta
+            cursor = database_service.connection.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT DISTINCT a.id, a.symbol, a.last_price_update_at
+                FROM assets a
+                INNER JOIN asset_movements am ON a.id = am.asset_id
+                WHERE am.account_id = %s AND a.asset_class = 'CRIPTO'
+                AND (a.last_price_update_at IS NULL OR a.last_price_update_at < DATE_SUB(NOW(), INTERVAL 1 MINUTE))
+            """, (account_id,))
+            assets_to_update = cursor.fetchall()
+            cursor.close()
+            
+            # 2. Atualizar preços dos assets que precisam de atualização
+            updated_assets = 0
+            if assets_to_update:
+                asset_ids = [asset['id'] for asset in assets_to_update]
+                update_result = await asset_service.update_asset_prices(asset_ids)
+                updated_assets = update_result.get('updated_count', 0)
+            
+            # 3. Criar resultado similar ao da sincronização de carteira
+            sync_result = {
+                "assets_updated": updated_assets,
+                "assets_found": len(assets_to_update),
+                "tokens_synced": updated_assets,  # Para compatibilidade com frontend
+                "message": f"{updated_assets} preços de ativos atualizados"
+            }
+            
+        else:
+            raise HTTPException(status_code=400, detail="Account is not a crypto account (CARTEIRA_CRIPTO or CORRETORA_CRIPTO)")
         
         # 3. Buscar a conta atualizada
         updated_account = account_service.get_account_by_id(user_id, account_id)
@@ -931,6 +981,27 @@ async def get_asset(asset_id: int):
         raise HTTPException(status_code=404, detail="Asset not found")
     
     return asset
+
+@app.get("/assets/icon/{asset_identifier}")
+async def get_asset_icon(asset_identifier: str):
+    """Obtém o ícone de um ativo da API da CoinGecko"""
+    from services.icon_service import IconService
+    
+    icon_service = IconService()
+    try:
+        result = icon_service.get_coingecko_icon(asset_identifier)
+        return result
+    finally:
+        icon_service.close()
+
+@app.post("/assets/icons/update-all")
+async def update_all_crypto_icons(current_user: dict = Depends(get_current_user)):
+    """Atualiza os ícones de todos os ativos cripto"""
+    try:
+        result = await asset_service.update_crypto_icons()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/assets/{asset_id}")
 async def update_asset(asset_id: int, asset: AssetUpdate, current_user: dict = Depends(get_current_user)):
@@ -983,6 +1054,82 @@ async def update_all_crypto_prices(current_user: dict = Depends(get_current_user
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
+@app.get("/assets/{asset_id}/price")
+async def get_asset_current_price(asset_id: int, current_user: dict = Depends(get_current_user)):
+    """Buscar preço atual de um ativo específico em tempo real"""
+    try:
+        # Buscar informações do ativo
+        cursor = database_service.connection.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM assets WHERE id = %s", (asset_id,))
+        asset = cursor.fetchone()
+        cursor.close()
+        
+        if not asset:
+            raise HTTPException(status_code=404, detail="Ativo não encontrado")
+        
+        # Só buscar preço para criptomoedas com price_api_identifier
+        if asset['asset_class'] != 'CRIPTO' or not asset['price_api_identifier']:
+            return {
+                "asset_id": asset_id,
+                "symbol": asset['symbol'],
+                "name": asset['name'],
+                "asset_class": asset['asset_class'],
+                "price_available": False,
+                "message": "Preço em tempo real não disponível para este ativo"
+            }
+        
+        # Usar instâncias globais dos serviços
+        try:
+            # Usar método assíncrono para buscar preços
+            usd_prices = await price_service.get_crypto_prices_in_usd([asset['price_api_identifier']])
+            usd_to_brl_rate = await price_service.get_usd_to_brl_rate()
+            
+            if usd_prices.get(asset['price_api_identifier'], 0) > 0 and usd_to_brl_rate > 0:
+                price_usd = usd_prices[asset['price_api_identifier']]
+                price_brl = price_usd * usd_to_brl_rate
+                
+                # MELHORIA: Atualizar preço no banco de dados automaticamente
+                try:
+                    logger.info(f"Atualizando preço persistido para {asset['symbol']} (ID: {asset_id})")
+                    update_result = await asset_service.update_asset_prices([asset_id])
+                    logger.info(f"Resultado da atualização: {update_result}")
+                    price_updated_in_db = update_result.get('success', False)
+                except Exception as e:
+                    logger.warning(f"Erro ao atualizar preço no banco para {asset['symbol']}: {e}")
+                    price_updated_in_db = False
+                
+                return {
+                    "asset_id": asset_id,
+                    "symbol": asset['symbol'],
+                    "name": asset['name'],
+                    "asset_class": asset['asset_class'],
+                    "price_api_identifier": asset['price_api_identifier'],
+                    "price_available": True,
+                    "current_price_usd": price_usd,
+                    "current_price_brl": price_brl,
+                    "usd_to_brl_rate": usd_to_brl_rate,
+                    "price_updated_in_db": price_updated_in_db,  # Novo campo
+                    "icon_url": f"https://cryptoicons.org/api/icon/{asset['symbol'].lower()}/32" if asset['symbol'] else None,
+                    "fetched_at": datetime.now().isoformat() + "Z"
+                }
+            else:
+                return {
+                    "asset_id": asset_id,
+                    "symbol": asset['symbol'],
+                    "name": asset['name'],
+                    "asset_class": asset['asset_class'],
+                    "price_available": False,
+                    "message": "Preço não encontrado na API"
+                }
+                
+        finally:
+            # Não fechar o price_service global
+            pass
+            
+    except Exception as e:
+        logger.error(f"Erro ao buscar preço do ativo {asset_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar preço: {str(e)}")
 
 # === ASSET HOLDINGS ENDPOINTS ===
 @app.post("/holdings")
@@ -1463,6 +1610,48 @@ async def get_portfolio_summary(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting portfolio summary: {str(e)}")
 
+@app.get("/portfolio/summary/{account_id}")
+async def get_portfolio_summary_by_account(account_id: int, current_user: dict = Depends(get_current_user)):
+    """Obtém resumo do portfólio filtrado por conta específica"""
+    try:
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        if not user_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        summary = portfolio_service.get_portfolio_summary(user_id, account_id)
+        
+        return {
+            "status": "success",
+            "portfolio": summary,
+            "account_id": account_id,
+            "total_positions": len(summary),
+            "total_value_brl": sum(position['market_value_brl'] for position in summary),
+            "total_value_usdt": sum(position['market_value_usdt'] for position in summary)
+        }
+    except Exception as e:
+        print(f"Erro ao obter resumo do portfólio da conta {account_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/portfolio/movements/{account_id}")
+async def get_movements_by_account(account_id: int, current_user: dict = Depends(get_current_user)):
+    """Obtém todas as movimentações de ativos de uma conta específica"""
+    try:
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        if not user_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        movements = portfolio_service.get_movements_by_account(user_id, account_id)
+        
+        return {
+            "status": "success",
+            "movements": movements,
+            "account_id": account_id,
+            "total_movements": len(movements)
+        }
+    except Exception as e:
+        print(f"Erro ao obter movimentações da conta {account_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/portfolio/movements")
 async def add_asset_movement(movement: AssetMovementCreate, current_user: dict = Depends(get_current_user)):
     """Adicionar novo movimento de ativo"""
@@ -1489,6 +1678,38 @@ async def get_asset_movements_history(asset_id: int, current_user: dict = Depend
         return movements
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting asset movements history: {str(e)}")
+
+@app.put("/portfolio/movements/{movement_id}")
+async def update_asset_movement(movement_id: int, movement: AssetMovementUpdate, current_user: dict = Depends(get_current_user)):
+    """Atualizar movimento de ativo existente"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        # Converter apenas campos que não são None
+        movement_data = {}
+        for field, value in movement.dict().items():
+            if value is not None:
+                movement_data[field] = value
+        
+        result = portfolio_service.update_asset_movement(user_id, movement_id, movement_data)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/portfolio/movements/{movement_id}")
+async def delete_asset_movement(movement_id: int, current_user: dict = Depends(get_current_user)):
+    """Deletar movimento de ativo"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        result = portfolio_service.delete_asset_movement(user_id, movement_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/summary/net-worth-history")
 async def get_net_worth_history(current_user: dict = Depends(get_current_user), days_limit: int = 365):

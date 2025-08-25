@@ -1,3 +1,29 @@
+-- -- -- Tabela de Posições (O que o usuário possui, onde e quanto)
+-- CREATE TABLE IF NOT EXISTS asset_holdings (
+--     id INT AUTO_INCREMENT PRIMARY KEY,
+--     user_id INT NOT NULL,
+--     account_id INT NOT NULL,
+--     asset_id INT NOT NULL,
+--     acquisition_date DATE,
+--     quantity DECIMAL(36, 18) NOT NULL,
+--     average_buy_price DECIMAL(36, 18),
+--     value_brl DECIMAL(36, 18) DEFAULT 0.0 COMMENT 'Valor do ativo em BRL baseado no preço atual';
+--     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+--     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+--     FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+-- );
+
+-- -- ALTER TABLE asset_holdings
+-- --     MODIFY quantity DECIMAL(36, 18) NOT NULL;
+
+-- -- ALTER TABLE asset_holdings
+-- --     MODIFY average_buy_price DECIMAL(36, 18);
+
+-- -- ALTER TABLE asset_holdings
+-- --     MODIFY value_brl DECIMAL(36, 18) DEFAULT 0.0 COMMENT 'Valor do ativo em BRL baseado no preço atual';
+
+
+
 -- Tabela de Usuários da Aplicação (já existente, garantir que está assim)
 CREATE TABLE users (
   id int NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -32,27 +58,17 @@ CREATE TABLE IF NOT EXISTS assets (
     id INT AUTO_INCREMENT PRIMARY KEY,
     symbol VARCHAR(50) NOT NULL UNIQUE, -- Ex: "BTC", "PETR4", "MATIC"
     name VARCHAR(255) NOT NULL, -- Ex: "Bitcoin", "Petrobras PN"
-    asset_class ENUM('CRIPTO', 'ACAO_BR', 'ACAO_EUA', 'RENDA_FIXA', 'FUNDO_IMOBILIARIO', 'MOEDA_FIDUCIARIA') NOT NULL,
+    asset_class ENUM('CRIPTO', 'ACAO_BR', 'ACAO_US', 'FUNDO', 'FII', 'COE', 'RENDA_FIXA', 'TESOURO', 'COMMODITIES', 'OUTROS') NOT NULL,
     price_api_identifier VARCHAR(255), -- Ex: 'bitcoin' (ID do CoinGecko para cotação)
     contract_address VARCHAR(255), -- Endereço do contrato para tokens ERC-20
     decimals INT DEFAULT 18, -- Decimais do token (padrão 18 para ERC-20)
+    icon_url VARCHAR(500), -- URL do ícone do ativo (CoinGecko, etc)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- -- Tabela de Posições (O que o usuário possui, onde e quanto)
-CREATE TABLE IF NOT EXISTS asset_holdings (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    account_id INT NOT NULL,
-    asset_id INT NOT NULL,
-    acquisition_date DATE,
-    quantity DECIMAL(20, 8) NOT NULL,
-    average_buy_price DECIMAL(20, 8),
-    value_brl DECIMAL(20, 8) DEFAULT 0.0 COMMENT 'Valor do ativo em BRL baseado no preço atual';
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-    FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
-);
+
+
+
 
 -- Crie a nova tabela de movimentos de ativos.
 CREATE TABLE asset_movements (
@@ -62,15 +78,24 @@ CREATE TABLE asset_movements (
     asset_id INT NOT NULL,
     movement_type ENUM('COMPRA', 'VENDA', 'TRANSFERENCIA_ENTRADA', 'TRANSFERENCIA_SAIDA', 'SINCRONIZACAO') NOT NULL,
     movement_date DATETIME NOT NULL,
-    quantity DECIMAL(20, 8) NOT NULL,
-    price_per_unit DECIMAL(20, 8) NULL, -- Preço por unidade na moeda da transação
-    fee DECIMAL(20, 8) DEFAULT 0.00, -- Taxas da operação
+    quantity DECIMAL(36, 18) NOT NULL,
+    price_per_unit DECIMAL(36, 18) NULL, -- Preço por unidade na moeda da transação
+    fee DECIMAL(36, 18) DEFAULT 0.00, -- Taxas da operação
     notes TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
     FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
 );
+
+-- ALTER TABLE asset_movements
+-- MODIFY quantity DECIMAL(36, 18) NOT NULL;
+
+-- ALTER TABLE asset_movements
+-- MODIFY price_per_unit DECIMAL(36, 18) NULL;
+
+-- ALTER TABLE asset_movements
+-- MODIFY fee DECIMAL(36, 18) DEFAULT 0.00;
 
 CREATE TABLE net_worth_snapshots (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -148,9 +173,15 @@ ADD COLUMN tx_hash VARCHAR(255) NULL UNIQUE,
 ADD COLUMN from_address VARCHAR(255) NULL,
 ADD COLUMN to_address VARCHAR(255) NULL,
 ADD COLUMN block_number BIGINT NULL,
-ADD COLUMN gas_fee DECIMAL(20, 8) NULL;
+ADD COLUMN gas_fee DECIMAL(36, 18) NULL;
 
 ALTER TABLE assets
-ADD COLUMN last_price_usdt DECIMAL(20, 8) NULL,
-ADD COLUMN last_price_brl DECIMAL(20, 8) NULL,
+ADD COLUMN last_price_usdt DECIMAL(36, 18) NULL,
+ADD COLUMN last_price_brl DECIMAL(36, 18) NULL,
 ADD COLUMN last_price_updated_at DATETIME NULL;
+
+
+
+
+
+

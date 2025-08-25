@@ -132,17 +132,24 @@ class AssetHoldingService:
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
             query = """
-                SELECT 
+                select 
                     a.id as asset_id,
                     a.symbol,
                     a.name as asset_name,
                     a.asset_class,
-                    SUM(ah.quantity) as total_quantity,
-                    AVG(ah.average_buy_price) as avg_buy_price,
-                    COUNT(ah.id) as positions_count
-                FROM asset_holdings ah
-                JOIN assets a ON ah.asset_id = a.id
-                WHERE ah.user_id = %s
+                    SUM(ps.total_bought - ps.total_sold) as total_quantity,
+                    case when sum(ps.weighted_quantity) > 0
+                        then sum(ps.total_invested) / SUM(ps.weighted_quantity)
+                        else 0
+                    end as avg_buy_price,
+                    COUNT(am.id) as positions_count
+                from asset_movements am
+                join assets a on a.id = am.asset_id
+                left join vw_portfolio_summary ps 
+                    on ps.account_id = am.account_id 
+                    and am.user_id = ps.user_id 
+                    and a.symbol = ps.symbol
+                where am.user_id = %s
                 GROUP BY a.id, a.symbol, a.name, a.asset_class
                 ORDER BY a.asset_class, a.symbol
             """

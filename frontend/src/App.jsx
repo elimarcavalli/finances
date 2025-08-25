@@ -9,6 +9,7 @@ import { StrategiesPage } from './pages/StrategiesPage';
 import { BacktestingPage } from './pages/BacktestingPage';
 import { AccountsPage } from './pages/AccountsPage';
 import { AccountDetailsPage } from './pages/AccountDetailsPage';
+import { CryptoAccountDetailsPage } from './pages/CryptoAccountDetailsPage';
 import { AssetsPage } from './pages/AssetsPage';
 import { TransactionsPage } from './pages/TransactionsPage';
 import { AccountsReceivablePage } from './pages/AccountsReceivablePage';
@@ -28,6 +29,7 @@ function App() {
           <Route path="portfolio" element={<PortfolioPage />} />
           <Route path="accounts" element={<AccountsPage />} />
           <Route path="contas/:accountId" element={<AccountDetailsPage />} />
+          <Route path="contas/cripto/:accountId" element={<CryptoAccountDetailsPage />} />
           <Route path="assets" element={<AssetsPage />} />
           {/* Movimentações */}
           <Route path="transactions" element={<TransactionsPage />} />

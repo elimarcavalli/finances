@@ -43,16 +43,26 @@ class PortfolioService:
         finally:
             cursor.close()
     
-    def get_portfolio_summary(self, user_id: int) -> List[Dict]:
+    def get_portfolio_summary(self, user_id: int, account_id: Optional[int] = None) -> List[Dict]:
         """Obtém o resumo do portfólio com cálculo de custo médio e posições atuais"""
         # Validação defensiva
         if not isinstance(user_id, int) or user_id <= 0:
             raise ValueError(f"user_id inválido: {user_id}")
-            
+        
+        # Garantir conexão ativa antes de consultas críticas
+        self.db_service.ensure_connection()
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
             # Nova query que inclui preços persistidos da tabela assets
-            query = """
+            # Agora com filtro opcional por account_id
+            where_conditions = ["am.user_id = %s"]
+            query_params = [user_id]
+            
+            if account_id is not None:
+                where_conditions.append("am.account_id = %s")
+                query_params.append(account_id)
+            
+            query = f"""
                 SELECT 
                     am.asset_id,
                     a.symbol,
@@ -73,24 +83,24 @@ class PortfolioService:
                         ELSE 0 
                     END) as total_sold,
                     SUM(CASE 
-                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA') AND am.price_per_unit IS NOT NULL
+                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO') AND am.price_per_unit IS NOT NULL
                         THEN am.quantity * am.price_per_unit 
                         ELSE 0 
                     END) as total_invested,
                     SUM(CASE 
-                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA') AND am.price_per_unit IS NOT NULL
+                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO') AND am.price_per_unit IS NOT NULL
                         THEN am.quantity 
                         ELSE 0 
                     END) as weighted_quantity
                 FROM asset_movements am
                 JOIN assets a ON am.asset_id = a.id
-                WHERE am.user_id = %s
+                WHERE {' AND '.join(where_conditions)}
                 GROUP BY am.asset_id, a.symbol, a.name, a.asset_class, a.price_api_identifier, 
                          a.last_price_usdt, a.last_price_brl, a.last_price_updated_at
                 HAVING (total_bought - total_sold) > 0
             """
             
-            cursor.execute(query, (user_id,))
+            cursor.execute(query, query_params)
             positions = cursor.fetchall()
             
             if not positions:
@@ -235,6 +245,40 @@ class PortfolioService:
             raise Exception(f"Erro ao obter histórico de movimentos: {err}")
         finally:
             cursor.close()
+
+    def get_movements_by_account(self, user_id: int, account_id: int) -> List[Dict]:
+        """Obtém todas as movimentações de uma conta específica, ordenadas por data"""
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        try:
+            query = """
+                SELECT 
+                    am.*,
+                    a.symbol,
+                    a.name as asset_name,
+                    a.asset_class,
+                    acc.name as account_name
+                FROM asset_movements am
+                JOIN assets a ON am.asset_id = a.id
+                JOIN accounts acc ON am.account_id = acc.id
+                WHERE am.user_id = %s AND am.account_id = %s
+                ORDER BY am.movement_date DESC, am.id DESC
+            """
+            
+            cursor.execute(query, (user_id, account_id))
+            movements = cursor.fetchall()
+            
+            # Converter Decimal para float para JSON serialization
+            for movement in movements:
+                for key, value in movement.items():
+                    if isinstance(value, Decimal):
+                        movement[key] = float(value)
+            
+            return movements
+            
+        except mysql.connector.Error as err:
+            raise Exception(f"Erro ao obter movimentos da conta: {err}")
+        finally:
+            cursor.close()
     
     def get_total_portfolio_value(self, user_id: int) -> Decimal:
         """Calcula o valor total do portfólio em BRL"""
@@ -249,3 +293,70 @@ class PortfolioService:
             
         except Exception as err:
             raise Exception(f"Erro ao calcular valor total do portfólio: {err}")
+    
+    def update_asset_movement(self, user_id: int, movement_id: int, movement_data: dict) -> dict:
+        """Atualiza um movimento de ativo existente"""
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        try:
+            # Verificar se o movimento pertence ao usuário
+            cursor.execute("SELECT * FROM asset_movements WHERE id = %s AND user_id = %s", (movement_id, user_id))
+            existing_movement = cursor.fetchone()
+            
+            if not existing_movement:
+                raise Exception("Movimento não encontrado ou não pertence ao usuário")
+            
+            # Construir query dinamicamente apenas com campos fornecidos
+            fields = []
+            values = []
+            
+            allowed_fields = ['account_id', 'asset_id', 'movement_type', 'movement_date', 'quantity', 'price_per_unit', 'fee', 'notes']
+            for field in allowed_fields:
+                if field in movement_data and movement_data[field] is not None:
+                    fields.append(f"{field} = %s")
+                    values.append(movement_data[field])
+            
+            if not fields:
+                raise Exception("Nenhum campo válido para atualizar")
+            
+            values.extend([movement_id, user_id])
+            query = f"UPDATE asset_movements SET {', '.join(fields)} WHERE id = %s AND user_id = %s"
+            
+            cursor.execute(query, values)
+            self.db_service.connection.commit()
+            
+            if cursor.rowcount == 0:
+                raise Exception("Falha ao atualizar movimento")
+            
+            return {"id": movement_id, "message": "Movimento atualizado com sucesso"}
+            
+        except mysql.connector.Error as err:
+            self.db_service.connection.rollback()
+            raise Exception(f"Erro ao atualizar movimento: {err}")
+        finally:
+            cursor.close()
+    
+    def delete_asset_movement(self, user_id: int, movement_id: int) -> dict:
+        """Deleta um movimento de ativo"""
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        try:
+            # Verificar se o movimento pertence ao usuário
+            cursor.execute("SELECT * FROM asset_movements WHERE id = %s AND user_id = %s", (movement_id, user_id))
+            existing_movement = cursor.fetchone()
+            
+            if not existing_movement:
+                raise Exception("Movimento não encontrado ou não pertence ao usuário")
+            
+            # Deletar o movimento
+            cursor.execute("DELETE FROM asset_movements WHERE id = %s AND user_id = %s", (movement_id, user_id))
+            self.db_service.connection.commit()
+            
+            if cursor.rowcount == 0:
+                raise Exception("Falha ao deletar movimento")
+            
+            return {"message": "Movimento deletado com sucesso"}
+            
+        except mysql.connector.Error as err:
+            self.db_service.connection.rollback()
+            raise Exception(f"Erro ao deletar movimento: {err}")
+        finally:
+            cursor.close()

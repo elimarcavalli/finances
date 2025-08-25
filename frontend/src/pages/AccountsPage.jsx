@@ -224,7 +224,12 @@ export function AccountsPage() {
     return accountType ? accountType.label : type;
   };
 
-  const getBalanceColor = (balance) => {
+  const getBalanceColor = (balance, accountType) => {
+    // Para contas CRIPTO, usar azul (cor de investimento)
+    if (accountType === 'CARTEIRA_CRIPTO' || accountType === 'CORRETORA_CRIPTO') {
+      return 'blue';
+    }
+    // Para outras contas, manter lógica verde/vermelho
     return balance >= 0 ? 'green' : 'red';
   };
 
@@ -273,7 +278,15 @@ export function AccountsPage() {
                 <Table.Td>
                   <Group gap="sm">
                     <IconCreditCard size={16} />
-                    <Anchor component={Link} to={`/contas/${account.id}`} fw={500}>
+                    <Anchor 
+                      component={Link} 
+                      to={
+                        (account.type === 'CARTEIRA_CRIPTO' || account.type === 'CORRETORA_CRIPTO') 
+                          ? `/contas/cripto/${account.id}` 
+                          : `/contas/${account.id}`
+                      } 
+                      fw={500}
+                    >
                       {account.name}
                     </Anchor>
                   </Group>
@@ -285,13 +298,13 @@ export function AccountsPage() {
                 </Table.Td>
                 <Table.Td>{account.institution || '-'}</Table.Td>
                 <Table.Td>
-                  <Text c={getBalanceColor(account.balance)} fw={500}>
+                  <Text c={getBalanceColor(account.balance, account.type)} fw={500}>
                     R$ {Number(account.balance).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                   </Text>
                 </Table.Td>
                 <Table.Td>
                   <Group gap="xs">
-                    {account.type === 'CARTEIRA_CRIPTO' && (
+                    {(account.type === 'CARTEIRA_CRIPTO' || account.type === 'CORRETORA_CRIPTO') && (
                       <ActionIcon
                         variant="light"
                         color="green"
@@ -376,7 +389,7 @@ export function AccountsPage() {
             {form.values.type === 'CARTAO_CREDITO' && (
               <>
                 <NumberInput
-                  label="Limite de Crédito"
+                  label="Limite de Crédito Total"
                   placeholder="0.00"
                   decimalScale={2}
                   fixedDecimalScale

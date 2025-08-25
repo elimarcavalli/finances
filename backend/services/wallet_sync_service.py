@@ -390,12 +390,11 @@ class WalletSyncService:
             
             logger.info(f"Criando movimento de sincronização: user_id={user_id}, account_id={account_id}, asset_id={asset_id}, quantity={quantity}, price={price_per_unit}")
             
-            # Verificar se já existe movimento de sincronização hoje para este ativo/conta
+            # Verificar se já existe movimento de sincronização para este ativo/conta
             cursor.execute("""
                 SELECT id FROM asset_movements 
                 WHERE user_id = %s AND account_id = %s AND asset_id = %s 
                 AND movement_type = 'SINCRONIZACAO' 
-                AND DATE(movement_date) = CURDATE()
             """, (user_id, account_id, asset_id))
             
             existing_movement = cursor.fetchone()
@@ -404,9 +403,9 @@ class WalletSyncService:
                 # Atualizar movimento existente
                 cursor.execute("""
                     UPDATE asset_movements 
-                    SET quantity = %s, price_per_unit = %s, movement_date = NOW()
+                    SET quantity = %s, movement_date = NOW()
                     WHERE id = %s
-                """, (quantity, price_per_unit, existing_movement[0]))
+                """, (quantity, existing_movement[0]))
                 logger.info(f"Movimento de sincronização atualizado para asset {asset_id}")
             else:
                 # Criar novo movimento

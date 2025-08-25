@@ -14,14 +14,15 @@ class AssetService:
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
             query = """
-                INSERT INTO assets (symbol, name, asset_class, price_api_identifier) 
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO assets (symbol, name, asset_class, price_api_identifier, icon_url) 
+                VALUES (%s, %s, %s, %s, %s)
             """
             values = (
                 asset_data.get('symbol'),
                 asset_data.get('name'),
                 asset_data.get('asset_class'),
-                asset_data.get('price_api_identifier')
+                asset_data.get('price_api_identifier'),
+                asset_data.get('icon_url')
             )
             
             cursor.execute(query, values)
@@ -78,7 +79,7 @@ class AssetService:
             fields = []
             values = []
             
-            allowed_fields = ['symbol', 'name', 'asset_class', 'price_api_identifier']
+            allowed_fields = ['symbol', 'name', 'asset_class', 'price_api_identifier', 'last_price_usdt', 'last_price_brl', 'icon_url']
             for field in allowed_fields:
                 if field in asset_data:
                     fields.append(f"{field} = %s")
@@ -180,6 +181,12 @@ class AssetService:
             for api_id, asset in asset_map.items():
                 if api_id in usd_prices:
                     usd_price = usd_prices[api_id]
+                    
+                    # PROTEÇÃO: Não atualizar se o preço for zero ou None
+                    if usd_price is None or usd_price == 0.0 or usd_price == 0:
+                        errors.append(f"Preço zero/inválido para {asset['symbol']} ({api_id}): {usd_price}")
+                        continue
+                    
                     brl_price = usd_price * usd_to_brl_rate
                     
                     update_query = """
@@ -193,6 +200,7 @@ class AssetService:
                     
                     if cursor.rowcount > 0:
                         updated_count += 1
+                        print(f"[ASSET_SERVICE] Preço atualizado: {asset['symbol']} = ${usd_price:.6f} USD / R$ {brl_price:.6f} BRL")
                     else:
                         errors.append(f"Falha ao atualizar ativo {asset['symbol']} (ID: {asset['id']})")
                 else:
@@ -237,7 +245,7 @@ class AssetService:
             dict com resultado da operacao
         """
         try:
-            crypto_assets = self.get_crypto_assets()
+            crypto_assets = [asset for asset in self.get_crypto_assets() if asset['symbol'] != 'USDT']
             if not crypto_assets:
                 return {'success': False, 'updated_count': 0, 'errors': ['Nenhum ativo cripto encontrado']}
             
@@ -246,3 +254,76 @@ class AssetService:
             
         except Exception as e:
             return {'success': False, 'updated_count': 0, 'errors': [f"Erro ao atualizar todos os ativos cripto: {str(e)}"]}
+    
+    def update_asset_icon(self, asset_id: int, icon_url: str) -> bool:
+        """Atualiza apenas o ícone de um ativo"""
+        cursor = self.db_service.connection.cursor()
+        try:
+            query = "UPDATE assets SET icon_url = %s WHERE id = %s"
+            cursor.execute(query, (icon_url, asset_id))
+            self.db_service.connection.commit()
+            
+            return cursor.rowcount > 0
+            
+        except mysql.connector.Error as err:
+            self.db_service.connection.rollback()
+            raise Exception(f"Erro ao atualizar ícone do ativo: {err}")
+        finally:
+            cursor.close()
+    
+    async def update_crypto_icons(self) -> dict:
+        """Atualiza os ícones de todos os ativos cripto"""
+        from .icon_service import IconService
+        
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        icon_service = IconService()
+        
+        try:
+            # Buscar todos os ativos cripto com price_api_identifier
+            query = """
+                SELECT id, symbol, price_api_identifier 
+                FROM assets 
+                WHERE asset_class = 'CRIPTO' 
+                AND price_api_identifier IS NOT NULL
+            """
+            cursor.execute(query)
+            crypto_assets = cursor.fetchall()
+            
+            if not crypto_assets:
+                return {'success': False, 'updated_count': 0, 'errors': ['Nenhum ativo cripto encontrado']}
+            
+            # Obter ícones em lote
+            identifiers = [asset['price_api_identifier'] for asset in crypto_assets]
+            icon_results = icon_service.get_multiple_icons(identifiers)
+            
+            updated_count = 0
+            errors = []
+            
+            for asset in crypto_assets:
+                identifier = asset['price_api_identifier']
+                if identifier in icon_results and icon_results[identifier]['success']:
+                    icon_url = icon_results[identifier]['icon_url']
+                    try:
+                        success = self.update_asset_icon(asset['id'], icon_url)
+                        if success:
+                            updated_count += 1
+                            print(f"[ICON_SERVICE] Ícone atualizado: {asset['symbol']} -> {icon_url}")
+                        else:
+                            errors.append(f"Falha ao atualizar ativo {asset['symbol']} (ID: {asset['id']})")
+                    except Exception as e:
+                        errors.append(f"Erro ao atualizar {asset['symbol']}: {str(e)}")
+                else:
+                    error_msg = icon_results.get(identifier, {}).get('error', 'Ícone não encontrado')
+                    errors.append(f"Ícone não encontrado para {asset['symbol']}: {error_msg}")
+            
+            return {
+                'success': updated_count > 0,
+                'updated_count': updated_count,
+                'errors': errors
+            }
+            
+        except Exception as e:
+            return {'success': False, 'updated_count': 0, 'errors': [f"Erro interno: {str(e)}"]}
+        finally:
+            cursor.close()
+            icon_service.close()

@@ -17,9 +17,10 @@ import {
   Grid,
   Loader,
   Paper,
-  Progress
+  Progress,
+  ScrollArea
 } from '@mantine/core';
-import { DatePickerInput } from '@mantine/dates';
+import { DatePickerInput, DateInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import {
@@ -30,7 +31,12 @@ import {
   IconCoins,
   IconAlertCircle,
   IconRefresh,
-  IconReload
+  IconReload,
+  IconCheck,
+  IconEdit,
+  IconTrash,
+  IconX,
+  IconDeviceFloppy
 } from '@tabler/icons-react';
 import api from '../api';
 
@@ -52,6 +58,14 @@ export function PortfolioPage() {
   const [selectedAssetName, setSelectedAssetName] = useState('');
   const [error, setError] = useState('');
   const [reconcilingWallets, setReconcilingWallets] = useState(false);
+  const [assetPrice, setAssetPrice] = useState(null);
+  const [priceLoading, setPriceLoading] = useState(false);
+  const [editingMovement, setEditingMovement] = useState(null);
+  const [editingValues, setEditingValues] = useState({});
+  const [savingMovement, setSavingMovement] = useState(false);
+  const [priceCurrency, setPriceCurrency] = useState('BRL');
+  const [usdtToBrlRate, setUsdtToBrlRate] = useState(null);
+  const [editPriceCurrency, setEditPriceCurrency] = useState('BRL');
 
   const form = useForm({
     initialValues: {
@@ -137,23 +151,80 @@ export function PortfolioPage() {
     loadAssets();
   }, [loadPortfolio, loadAccounts, loadAssets]);
 
+  // Buscar taxa USDT/BRL quando necessário (modal de adicionar)
+  useEffect(() => {
+    if (priceCurrency === 'USDT' && modalOpened && !usdtToBrlRate) {
+      fetchUsdtToBrlRate();
+    }
+  }, [priceCurrency, modalOpened, usdtToBrlRate]);
+
+  // Buscar taxa USDT/BRL quando necessário (edição de movimento)
+  useEffect(() => {
+    if (editPriceCurrency === 'USDT' && editingMovement && !usdtToBrlRate) {
+      fetchUsdtToBrlRate();
+    }
+  }, [editPriceCurrency, editingMovement, usdtToBrlRate]);
+
+  // Monitorar mudanças no asset_id selecionado para buscar preço
+  useEffect(() => {
+    if (form.values.asset_id && modalOpened) {
+      fetchAssetPrice(form.values.asset_id);
+    } else {
+      setAssetPrice(null);
+    }
+  }, [form.values.asset_id, modalOpened]);
+
   const handleAddMovement = async (values) => {
     setLoading(true);
     try {
+      let priceInBrl = values.price_per_unit;
+      
+      // Se o preço foi digitado em USDT, converter para BRL
+      if (priceCurrency === 'USDT' && values.price_per_unit > 0) {
+        let rate = usdtToBrlRate;
+        
+        if (!rate) {
+          console.log('[CONVERSION] Taxa não está em cache, buscando...');
+          rate = await fetchUsdtToBrlRate();
+          if (!rate) {
+            throw new Error('Não foi possível obter a taxa de conversão USDT/BRL. Verifique se o ativo USDT está cadastrado no sistema.');
+          }
+        }
+        
+        priceInBrl = values.price_per_unit * rate;
+        console.log(`[CONVERSION] Preço em USDT: ${values.price_per_unit}, Taxa: ${rate}, Preço em BRL: ${priceInBrl}`);
+      }
+
       const formattedData = {
         ...values,
         movement_date: values.movement_date.toISOString().split('T')[0],
         account_id: parseInt(values.account_id),
-        asset_id: parseInt(values.asset_id)
+        asset_id: parseInt(values.asset_id),
+        price_per_unit: priceInBrl // Sempre enviar em BRL
       };
 
       await api.post('/portfolio/movements', formattedData);
       setModalOpened(false);
       form.reset();
+      setAssetPrice(null); // Limpar preço ao fechar modal
+      setPriceCurrency('BRL'); // Resetar para BRL
       await loadPortfolio();
+      
+      notifications.show({
+        title: 'Sucesso',
+        message: priceCurrency === 'USDT' ? 
+          `Movimento adicionado! Preço convertido de ${values.price_per_unit} USDT para ${formatCurrency(priceInBrl)}` :
+          'Movimento adicionado com sucesso',
+        color: 'green'
+      });
+      
     } catch (err) {
       console.error('Erro ao adicionar movimento:', err);
-      setError('Erro ao adicionar movimento');
+      notifications.show({
+        title: 'Erro',
+        message: err.message || 'Erro ao adicionar movimento',
+        color: 'red'
+      });
     } finally {
       setLoading(false);
     }
@@ -178,13 +249,16 @@ export function PortfolioPage() {
     try {
       console.log('[PORTFOLIO_PAGE] Iniciando reprocessamento de carteiras...');
       
-      // Filtrar apenas contas do tipo CARTEIRA_CRIPTO
-      const cryptoWallets = accounts.filter(account => account.type === 'CARTEIRA_CRIPTO' && account.public_address);
+      // Filtrar apenas contas do tipo CARTEIRA_CRIPTO ou CORRETORA_CRIPTO
+      // Alterar o filtro para incluir ambos os tipos
+      // const cryptoWallets = accounts.filter(account => account.type === 'CARTEIRA_CRIPTO' && account.public_address);
+      const cryptoWallets = accounts.filter(account => account.type === 'CARTEIRA_CRIPTO' || account.type === 'CORRETORA_CRIPTO');
+
       
       if (cryptoWallets.length === 0) {
         notifications.show({
           title: 'Nenhuma Carteira Encontrada',
-          message: 'Não foram encontradas carteiras cripto com endereços públicos para reconciliar',
+          message: 'Não foram encontradas contas cripto para reprocessar',
           color: 'yellow',
           autoClose: 5000,
         });
@@ -196,8 +270,8 @@ export function PortfolioPage() {
       // Exibir feedback de progresso
       notifications.show({
         id: 'reconciliation-progress',
-        title: 'Reconciliando com a Blockchain',
-        message: `Processando ${cryptoWallets.length} carteira(s)... Isso pode levar alguns minutos.`,
+        title: 'Reprocessando Contas Cripto',
+        message: `Processando ${cryptoWallets.length} conta(s) cripto... Sincronizando carteiras e atualizando preços.`,
         color: 'blue',
         autoClose: false,
         loading: true,
@@ -272,12 +346,78 @@ export function PortfolioPage() {
     }).format(value);
   };
 
+  // Função para formatar números com até 18 casas decimais, removendo zeros à direita
+  const formatPrecisionNumber = (value, maxDecimals = 18) => {
+    if (!value || value === 0) return '0';
+    
+    const num = parseFloat(value);
+    if (isNaN(num)) return '0';
+    
+    // Formatar com máximo de casas decimais
+    const formatted = num.toFixed(maxDecimals);
+    
+    // Remover zeros à direita e ponto decimal desnecessário
+    return formatted.replace(/\.?0+$/, '');
+  };
+
+  // Função para buscar a taxa de conversão USDT para BRL
+  const fetchUsdtToBrlRate = async () => {
+    try {
+      console.log('[USDT_RATE] Buscando taxa de conversão USDT/BRL...');
+      // Buscar o preço do USDT na tabela assets
+      const response = await api.get('/assets');
+      console.log('[USDT_RATE] Resposta da API:', response.data);
+      
+      // A API retorna {"assets": assets}, então acessamos response.data.assets
+      const assetsArray = response.data.assets || response.data;
+      
+      if (!Array.isArray(assetsArray)) {
+        console.error('[USDT_RATE] Resposta não é um array:', assetsArray);
+        return null;
+      }
+      
+      const usdtAsset = assetsArray.find(asset => asset.symbol === 'USDT');
+      console.log('[USDT_RATE] Asset USDT encontrado:', usdtAsset);
+      
+      if (usdtAsset && usdtAsset.last_price_brl) {
+        const rate = parseFloat(usdtAsset.last_price_brl);
+        console.log('[USDT_RATE] Taxa obtida:', rate);
+        setUsdtToBrlRate(rate);
+        return rate;
+      }
+      
+      console.warn('[USDT_RATE] USDT não encontrado ou sem preço BRL');
+      return null;
+    } catch (error) {
+      console.error('[USDT_RATE] Erro ao buscar taxa USDT/BRL:', error);
+      return null;
+    }
+  };
+
   const formatPercentage = (value) => {
     return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
   };
 
   const getPercentageColor = (value) => {
     return value >= 0 ? 'green' : 'red';
+  };
+
+  const fetchAssetPrice = async (assetId) => {
+    if (!assetId) {
+      setAssetPrice(null);
+      return;
+    }
+
+    setPriceLoading(true);
+    try {
+      const response = await api.get(`/assets/${assetId}/price`);
+      setAssetPrice(response.data);
+    } catch (error) {
+      console.error('Erro ao buscar preço do ativo:', error);
+      setAssetPrice(null);
+    } finally {
+      setPriceLoading(false);
+    }
   };
 
   const getTotalPortfolioValue = () => {
@@ -289,7 +429,177 @@ export function PortfolioPage() {
   };
 
   const getTotalUnrealizedPnL = () => {
-    return portfolio.reduce((total, position) => total + position.unrealized_pnl, 0);
+    return portfolio.reduce((total, position) => total + (position.unrealized_pnl_brl || position.unrealized_pnl || 0), 0);
+  };
+
+  const startEditMovement = (movement) => {
+    setEditingMovement(movement.id);
+    setEditPriceCurrency('BRL'); // Sempre começar com BRL (valor do banco)
+    setEditingValues({
+      movement_date: movement.movement_date,
+      movement_type: movement.movement_type,
+      account_id: movement.account_id,
+      quantity: movement.quantity,
+      price_per_unit: movement.price_per_unit || '', // Valor em BRL do banco
+      fee: movement.fee || '',
+      notes: movement.notes || ''
+    });
+  };
+
+  const cancelEditMovement = () => {
+    setEditingMovement(null);
+    setEditingValues({});
+    setEditPriceCurrency('BRL');
+  };
+
+  const saveMovementChanges = async (movementId) => {
+    setSavingMovement(true);
+    try {
+      const changedData = {};
+      
+      // Comparar com valores originais e só enviar o que mudou
+      const originalMovement = selectedAssetHistory.find(m => m.id === movementId);
+      
+      Object.keys(editingValues).forEach(key => {
+        let newValue = editingValues[key];
+        let originalValue = originalMovement[key];
+        
+        // Normalizar valores para comparação
+        if (key === 'movement_date') {
+          originalValue = originalValue ? originalValue.split('T')[0] : '';
+          newValue = newValue ? new Date(newValue).toISOString().split('T')[0] : '';
+        } else if (['quantity', 'price_per_unit', 'fee'].includes(key)) {
+          originalValue = originalValue || 0;
+          newValue = parseFloat(newValue) || 0;
+        } else if (key === 'account_id') {
+          originalValue = parseInt(originalValue);
+          newValue = parseInt(newValue);
+        }
+        
+        if (newValue !== originalValue) {
+          changedData[key] = newValue;
+        }
+      });
+
+      if (Object.keys(changedData).length === 0) {
+        cancelEditMovement();
+        return;
+      }
+
+      // Variáveis para mensagem de conversão
+      let wasConverted = false;
+      let originalPriceInUsdt = null;
+
+      // Se o preço mudou e está em USDT, converter para BRL
+      if (changedData.price_per_unit && editPriceCurrency === 'USDT') {
+        let rate = usdtToBrlRate;
+        if (!rate) {
+          rate = await fetchUsdtToBrlRate();
+          if (!rate) {
+            throw new Error('Não foi possível obter a taxa de conversão USDT/BRL');
+          }
+        }
+        
+        originalPriceInUsdt = changedData.price_per_unit;
+        changedData.price_per_unit = originalPriceInUsdt * rate;
+        wasConverted = true;
+        console.log(`[EDIT_CONVERSION] Preço em USDT: ${originalPriceInUsdt}, Taxa: ${rate}, Preço em BRL: ${changedData.price_per_unit}`);
+      }
+
+      await api.put(`/portfolio/movements/${movementId}`, changedData);
+      
+      notifications.show({
+        title: 'Sucesso',
+        message: wasConverted ? 
+          `Movimento atualizado! Preço convertido de ${originalPriceInUsdt} USDT para ${formatCurrency(changedData.price_per_unit)}` :
+          'Movimento atualizado com sucesso',
+        color: 'green'
+      });
+
+      // Recarregar histórico
+      const response = await api.get(`/portfolio/assets/${selectedAssetHistory[0].asset_id}/movements`);
+      setSelectedAssetHistory(response.data || []);
+      
+      cancelEditMovement();
+      
+    } catch (error) {
+      console.error('Erro ao salvar movimento:', error);
+      notifications.show({
+        title: 'Erro',
+        message: 'Não foi possível atualizar o movimento',
+        color: 'red'
+      });
+    } finally {
+      setSavingMovement(false);
+    }
+  };
+
+  const deleteMovement = async (movementId) => {
+    if (!confirm('Tem certeza que deseja deletar este movimento? Esta ação não pode ser desfeita.')) return;
+    
+    try {
+      console.log('[DELETE] Deletando movimento:', movementId);
+      const response = await api.delete(`/portfolio/movements/${movementId}`);
+      console.log('[DELETE] Resposta do servidor:', response);
+      
+      notifications.show({
+        title: 'Sucesso',
+        message: 'Movimento deletado com sucesso',
+        color: 'green'
+      });
+
+      // Cancelar edição se estava editando este movimento
+      if (editingMovement === movementId) {
+        setEditingMovement(null);
+        setEditingValues({});
+      }
+
+      // Encontrar asset_id do movimento que está sendo deletado
+      const movementToDelete = selectedAssetHistory.find(m => m.id === movementId);
+      if (movementToDelete) {
+        // Recarregar histórico usando o asset_id correto
+        const historyResponse = await api.get(`/portfolio/assets/${movementToDelete.asset_id}/movements`);
+        setSelectedAssetHistory(historyResponse.data || []);
+        console.log('[DELETE] Histórico recarregado:', historyResponse.data);
+      }
+      
+      // Recarregar portfólio também
+      await loadPortfolio();
+      
+    } catch (error) {
+      console.error('Erro ao deletar movimento:', error);
+      console.error('Detalhes do erro:', error.response?.data);
+      notifications.show({
+        title: 'Erro',
+        message: error.response?.data?.detail || 'Não foi possível deletar o movimento',
+        color: 'red'
+      });
+    }
+  };
+
+  const hasUnsavedChanges = (movementId) => {
+    if (editingMovement !== movementId) return false;
+    
+    const originalMovement = selectedAssetHistory.find(m => m.id === movementId);
+    if (!originalMovement) return false;
+    
+    return Object.keys(editingValues).some(key => {
+      let newValue = editingValues[key];
+      let originalValue = originalMovement[key];
+      
+      if (key === 'movement_date') {
+        originalValue = originalValue ? originalValue.split('T')[0] : '';
+        newValue = newValue ? new Date(newValue).toISOString().split('T')[0] : '';
+      } else if (['quantity', 'price_per_unit', 'fee'].includes(key)) {
+        originalValue = originalValue || 0;
+        newValue = parseFloat(newValue) || 0;
+      } else if (key === 'account_id') {
+        originalValue = parseInt(originalValue);
+        newValue = parseInt(newValue);
+      }
+      
+      return newValue !== originalValue;
+    });
   };
 
   const accountOptions = accounts.map(account => ({
@@ -332,7 +642,7 @@ export function PortfolioPage() {
             loading={reconcilingWallets}
             disabled={loading}
           >
-            Reprocessar Carteiras
+            Reprocessar Cripto
           </Button>
           <ActionIcon
             variant="light"
@@ -345,7 +655,10 @@ export function PortfolioPage() {
           </ActionIcon>
           <Button
             leftSection={<IconPlus size={16} />}
-            onClick={() => setModalOpened(true)}
+            onClick={() => {
+              setModalOpened(true);
+              setAssetPrice(null); // Limpar preço ao abrir modal
+            }}
           >
             Adicionar Movimento
           </Button>
@@ -452,44 +765,43 @@ export function PortfolioPage() {
                     </Badge>
                   </Table.Td>
                   <Table.Td ta="right">
-                    <Text size="sm">
-                      {new Intl.NumberFormat('pt-BR', { 
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 8
-                      }).format(position.quantity)}
+                    <Text size="sm" family="monospace">
+                      {formatPrecisionNumber(position.quantity)}
                     </Text>
                   </Table.Td>
                   <Table.Td ta="right">
                     <Text size="sm">
-                      {formatCurrency(position.average_price)}
+                      {formatCurrency(position.average_price_brl || 0)}
                     </Text>
                   </Table.Td>
                   <Table.Td ta="right">
                     <Text size="sm">
-                      {formatCurrency(position.current_price)}
+                      {formatCurrency(position.current_price_brl || 0)}
                     </Text>
                   </Table.Td>
                   <Table.Td ta="right">
-                    <Text fw={500} size="sm">
+                    <Text
+                      c={getPercentageColor(position.unrealized_pnl_brl || position.unrealized_pnl)}
+                      fw={500} size="sm">
                       {formatCurrency(position.market_value_brl || position.market_value || 0)}
                     </Text>
                   </Table.Td>
                   <Table.Td ta="right">
                     <Text
-                      c={getPercentageColor(position.unrealized_pnl_percentage)}
+                      c={getPercentageColor(position.unrealized_pnl_percentage_brl || position.unrealized_pnl_percentage)}
                       fw={500}
                       size="sm"
                     >
-                      {formatPercentage(position.unrealized_pnl_percentage)}
+                      {formatPercentage(position.unrealized_pnl_percentage_brl || position.unrealized_pnl_percentage)}
                     </Text>
                   </Table.Td>
                   <Table.Td ta="right">
                     <Text
-                      c={getPercentageColor(position.unrealized_pnl)}
+                      c={getPercentageColor(position.unrealized_pnl_brl || position.unrealized_pnl)}
                       fw={500}
                       size="sm"
                     >
-                      {formatCurrency(position.unrealized_pnl)}
+                      {formatCurrency(position.unrealized_pnl_brl || position.unrealized_pnl)}
                     </Text>
                   </Table.Td>
                   <Table.Td>
@@ -512,7 +824,11 @@ export function PortfolioPage() {
       {/* Modal de Adicionar Movimento */}
       <Modal
         opened={modalOpened}
-        onClose={() => setModalOpened(false)}
+        onClose={() => {
+          setModalOpened(false);
+          setAssetPrice(null); // Limpar preço ao fechar modal
+          setPriceCurrency('BRL'); // Resetar moeda para BRL
+        }}
         title="Adicionar Movimento de Ativo"
         size="lg"
       >
@@ -534,6 +850,61 @@ export function PortfolioPage() {
               />
             </Group>
 
+            {/* Ticker de Preço para Criptomoedas */}
+            {assetPrice && assetPrice.price_available && assetPrice.asset_class === 'CRIPTO' && (
+              <Paper withBorder p="md" radius="md" style={{ background: 'linear-gradient(45deg, #667eea 0%, #764ba2 100%)' }}>
+                <Group justify="space-between" align="center">
+                  <Group gap="sm">
+                    {assetPrice.icon_url && (
+                      <img 
+                        src={assetPrice.icon_url} 
+                        alt={assetPrice.symbol}
+                        width={32}
+                        height={32}
+                        style={{ borderRadius: '50%' }}
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                        }}
+                      />
+                    )}
+                    <div>
+                      <Text c="white" fw={600} size="sm">
+                        {assetPrice.symbol} - {assetPrice.name}
+                      </Text>
+                      <Group gap={4} align="center">
+                        <Text c="white" size="xs" style={{ opacity: 0.8 }}>
+                          Preço Atual (Tempo Real)
+                        </Text>
+                        {assetPrice.price_updated_in_db && (
+                          <Badge color="green" size="xs" variant="light" leftSection={<IconCheck size={10} />}>
+                            Sincronizado
+                          </Badge>
+                        )}
+                      </Group>
+                    </div>
+                  </Group>
+                  <div style={{ textAlign: 'right' }}>
+                    <Text c="white" fw={700} size="lg">
+                      {formatCurrency(assetPrice.current_price_brl)}
+                    </Text>
+                    <Text c="white" size="xs" style={{ opacity: 0.8 }}>
+                      ${assetPrice.current_price_usd?.toFixed(6)}
+                    </Text>
+                  </div>
+                </Group>
+              </Paper>
+            )}
+
+            {/* Indicador de carregamento de preço */}
+            {priceLoading && form.values.asset_id && (
+              <Paper withBorder p="md" radius="md" style={{ background: '#f8f9fa' }}>
+                <Group justify="center" align="center" gap="sm">
+                  <Loader size="sm" />
+                  <Text size="sm" c="dimmed">Buscando preço atual...</Text>
+                </Group>
+              </Paper>
+            )}
+
             <Group grow>
               <Select
                 label="Tipo de Movimento"
@@ -546,22 +917,52 @@ export function PortfolioPage() {
               />
             </Group>
 
+            <NumberInput
+              label="Quantidade"
+              placeholder="0.000000000000000000"
+              decimalScale={18}
+              min={0}
+              {...form.getInputProps('quantity')}
+            />
+
             <Group grow>
               <NumberInput
-                label="Quantidade"
-                placeholder="0.00"
-                decimalScale={8}
-                min={0}
-                {...form.getInputProps('quantity')}
-              />
-              <NumberInput
                 label="Preço por Unidade"
-                placeholder="0.00"
-                decimalScale={8}
+                placeholder="0.000000000000000000"
+                decimalScale={18}
                 min={0}
                 {...form.getInputProps('price_per_unit')}
               />
+              <Select
+                label="Moeda"
+                placeholder="Selecione a moeda"
+                data={[
+                  { 
+                    value: 'BRL', 
+                    label: '🇧🇷 BRL',
+                  },
+                  { 
+                    value: 'USDT', 
+                    label: '🇺🇸 USDT',
+                  }
+                ]}
+                value={priceCurrency}
+                onChange={(value) => setPriceCurrency(value)}
+                allowDeselect={false}
+                w={120}
+              />
             </Group>
+
+            {priceCurrency === 'USDT' && usdtToBrlRate && (
+              <Alert color="blue" variant="light" mt="xs">
+                <Text size="sm">
+                  Taxa de conversão: 1 USDT = {formatCurrency(usdtToBrlRate)}
+                  {form.values.price_per_unit > 0 && (
+                    <> | Equivalente: {formatCurrency(form.values.price_per_unit * usdtToBrlRate)}</>
+                  )}
+                </Text>
+              </Alert>
+            )}
 
             <NumberInput
               label="Taxa (Opcional)"
@@ -578,7 +979,11 @@ export function PortfolioPage() {
             />
 
             <Group justify="flex-end" mt="md">
-              <Button variant="light" onClick={() => setModalOpened(false)}>
+              <Button variant="light" onClick={() => {
+                setModalOpened(false);
+                setAssetPrice(null); // Limpar preço ao cancelar
+                setPriceCurrency('BRL'); // Resetar moeda para BRL
+              }}>
                 Cancelar
               </Button>
               <Button type="submit" loading={loading}>
@@ -596,57 +1001,302 @@ export function PortfolioPage() {
         title={`Histórico de Movimentos - ${selectedAssetName}`}
         size="xl"
       >
-        <Table>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Data</Table.Th>
-              <Table.Th>Tipo</Table.Th>
-              <Table.Th>Conta</Table.Th>
-              <Table.Th ta="right">Quantidade</Table.Th>
-              <Table.Th ta="right">Preço</Table.Th>
-              <Table.Th ta="right">Taxa</Table.Th>
-              <Table.Th>Observações</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
+        <ScrollArea>
+          <Stack gap="md">
             {selectedAssetHistory.map((movement) => (
-              <Table.Tr key={movement.id}>
-                <Table.Td>
-                  {new Date(movement.movement_date).toLocaleDateString('pt-BR')}
-                </Table.Td>
-                <Table.Td>
-                  <Badge 
-                    color={
-                      movement.movement_type === 'COMPRA' ? 'green' :
-                      movement.movement_type === 'VENDA' ? 'red' : 'blue'
-                    }
-                    variant="light"
-                  >
-                    {movement.movement_type}
-                  </Badge>
-                </Table.Td>
-                <Table.Td>{movement.account_name}</Table.Td>
-                <Table.Td ta="right">
-                  {new Intl.NumberFormat('pt-BR', { 
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 8
-                  }).format(movement.quantity)}
-                </Table.Td>
-                <Table.Td ta="right">
-                  {movement.price_per_unit ? formatCurrency(movement.price_per_unit) : '-'}
-                </Table.Td>
-                <Table.Td ta="right">
-                  {movement.fee ? formatCurrency(movement.fee) : '-'}
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm" c="dimmed">
-                    {movement.notes || '-'}
-                  </Text>
-                </Table.Td>
-              </Table.Tr>
+              <Paper key={movement.id} p="md" withBorder radius="md" bg={editingMovement === movement.id ? "dark.8" : undefined}>
+                <Grid gutter="md">
+                  {/* Data */}
+                  <Grid.Col span={6} sm={3}>
+                    <Text size="xs" fw={500} c="dimmed" mb={4}>Data</Text>
+                    {editingMovement === movement.id ? (
+                      <DateInput
+                        size="sm"
+                        value={editingValues.movement_date ? new Date(editingValues.movement_date) : null}
+                        onChange={(value) => setEditingValues(prev => ({
+                          ...prev,
+                          movement_date: value ? value.toISOString().split('T')[0] : ''
+                        }))}
+                        styles={{
+                          input: {
+                            backgroundColor: 'var(--mantine-color-dark-6)',
+                            borderColor: 'var(--mantine-color-blue-4)',
+                            color: 'var(--mantine-color-white)',
+                          }
+                        }}
+                      />
+                    ) : (
+                      <Text size="sm">
+                        {new Date(movement.movement_date).toLocaleDateString('pt-BR')}
+                      </Text>
+                    )}
+                  </Grid.Col>
+
+                  {/* Tipo */}
+                  <Grid.Col span={6} sm={3}>
+                    <Text size="xs" fw={500} c="dimmed" mb={4}>Tipo</Text>
+                    {editingMovement === movement.id ? (
+                      <Select
+                        size="sm"
+                        data={[
+                          { value: 'COMPRA', label: 'COMPRA' },
+                          { value: 'VENDA', label: 'VENDA' },
+                          { value: 'TRANSFERENCIA_ENTRADA', label: 'TRANSFERÊNCIA ENTRADA' },
+                          { value: 'TRANSFERENCIA_SAIDA', label: 'TRANSFERÊNCIA SAÍDA' },
+                          { value: 'SINCRONIZACAO', label: 'SINCRONIZAÇÃO' }
+                        ]}
+                        value={editingValues.movement_type}
+                        onChange={(value) => setEditingValues(prev => ({
+                          ...prev,
+                          movement_type: value
+                        }))}
+                        styles={{
+                          input: {
+                            backgroundColor: 'var(--mantine-color-dark-6)',
+                            borderColor: 'var(--mantine-color-blue-4)',
+                            color: 'var(--mantine-color-white)',
+                          }
+                        }}
+                      />
+                    ) : (
+                      <Badge 
+                        color={
+                          movement.movement_type === 'COMPRA' ? 'green' :
+                          movement.movement_type === 'VENDA' ? 'red' : 'blue'
+                        }
+                        variant="light"
+                      >
+                        {movement.movement_type}
+                      </Badge>
+                    )}
+                  </Grid.Col>
+
+                  {/* Conta */}
+                  <Grid.Col span={12} sm={6}>
+                    <Text size="xs" fw={500} c="dimmed" mb={4}>Conta</Text>
+                    {editingMovement === movement.id ? (
+                      <Select
+                        size="sm"
+                        data={accounts.map(acc => ({ value: acc.id.toString(), label: acc.name }))}
+                        value={editingValues.account_id?.toString()}
+                        onChange={(value) => setEditingValues(prev => ({
+                          ...prev,
+                          account_id: parseInt(value)
+                        }))}
+                        styles={{
+                          input: {
+                            backgroundColor: 'var(--mantine-color-dark-6)',
+                            borderColor: 'var(--mantine-color-blue-4)',
+                            color: 'var(--mantine-color-white)',
+                          }
+                        }}
+                      />
+                    ) : (
+                      <Text size="sm">{movement.account_name}</Text>
+                    )}
+                  </Grid.Col>
+
+                  {/* Quantidade */}
+                  <Grid.Col span={6} sm={3}>
+                    <Text size="xs" fw={500} c="dimmed" mb={4}>Quantidade</Text>
+                    {editingMovement === movement.id ? (
+                      <NumberInput
+                        size="sm"
+                        decimalScale={18}
+                        min={0}
+                        value={editingValues.quantity}
+                        onChange={(value) => setEditingValues(prev => ({
+                          ...prev,
+                          quantity: value
+                        }))}
+                        styles={{
+                          input: {
+                            backgroundColor: 'var(--mantine-color-dark-6)',
+                            borderColor: 'var(--mantine-color-blue-4)',
+                            color: 'var(--mantine-color-white)',
+                          }
+                        }}
+                      />
+                    ) : (
+                      <Text size="sm" family="monospace">
+                        {formatPrecisionNumber(movement.quantity)}
+                      </Text>
+                    )}
+                  </Grid.Col>
+
+                  {/* Preço */}
+                  <Grid.Col span={12} sm={6}>
+                    <Text size="xs" fw={500} c="dimmed" mb={4}>Preço</Text>
+                    {editingMovement === movement.id ? (
+                      <Group grow>
+                        <NumberInput
+                          size="sm"
+                          decimalScale={18}
+                          min={0}
+                          value={editingValues.price_per_unit}
+                          onChange={(value) => setEditingValues(prev => ({
+                            ...prev,
+                            price_per_unit: value
+                          }))}
+                          styles={{
+                            input: {
+                              backgroundColor: 'var(--mantine-color-dark-6)',
+                              borderColor: 'var(--mantine-color-blue-4)',
+                              color: 'var(--mantine-color-white)',
+                            }
+                          }}
+                        />
+                        <Select
+                          size="sm"
+                          data={[
+                            { value: 'BRL', label: '🇧🇷 BRL' },
+                            { value: 'USDT', label: '🇺🇸 USDT' }
+                          ]}
+                          value={editPriceCurrency}
+                          onChange={(value) => setEditPriceCurrency(value)}
+                          allowDeselect={false}
+                          w={120}
+                          styles={{
+                            input: {
+                              backgroundColor: 'var(--mantine-color-dark-6)',
+                              borderColor: 'var(--mantine-color-blue-4)',
+                              color: 'var(--mantine-color-white)',
+                            }
+                          }}
+                        />
+                      </Group>
+                    ) : (
+                      <Text size="sm">
+                        {movement.price_per_unit ? formatCurrency(movement.price_per_unit) : '-'}
+                      </Text>
+                    )}
+                  </Grid.Col>
+
+                  {/* Alert de conversão para edição */}
+                  {editingMovement === movement.id && editPriceCurrency === 'USDT' && usdtToBrlRate && (
+                    <Grid.Col span={12}>
+                      <Alert color="blue" variant="light" size="sm">
+                        <Text size="sm">
+                          Taxa de conversão: 1 USDT = {formatCurrency(usdtToBrlRate)}
+                          {editingValues.price_per_unit > 0 && (
+                            <> | Equivalente: {formatCurrency(editingValues.price_per_unit * usdtToBrlRate)}</>
+                          )}
+                        </Text>
+                      </Alert>
+                    </Grid.Col>
+                  )}
+
+                  {/* Taxa */}
+                  <Grid.Col span={6} sm={3}>
+                    <Text size="xs" fw={500} c="dimmed" mb={4}>Taxa</Text>
+                    {editingMovement === movement.id ? (
+                      <NumberInput
+                        size="sm"
+                        decimalScale={2}
+                        min={0}
+                        value={editingValues.fee}
+                        onChange={(value) => setEditingValues(prev => ({
+                          ...prev,
+                          fee: value
+                        }))}
+                        styles={{
+                          input: {
+                            backgroundColor: 'var(--mantine-color-dark-6)',
+                            borderColor: 'var(--mantine-color-blue-4)',
+                            color: 'var(--mantine-color-white)',
+                          }
+                        }}
+                      />
+                    ) : (
+                      <Text size="sm">
+                        {movement.fee ? formatCurrency(movement.fee) : '-'}
+                      </Text>
+                    )}
+                  </Grid.Col>
+
+                  {/* Observações */}
+                  <Grid.Col span={12} sm={3}>
+                    <Text size="xs" fw={500} c="dimmed" mb={4}>Observações</Text>
+                    {editingMovement === movement.id ? (
+                      <TextInput
+                        size="sm"
+                        value={editingValues.notes || ''}
+                        onChange={(event) => setEditingValues(prev => ({
+                          ...prev,
+                          notes: event.currentTarget.value
+                        }))}
+                        styles={{
+                          input: {
+                            backgroundColor: 'var(--mantine-color-dark-6)',
+                            borderColor: 'var(--mantine-color-blue-4)',
+                            color: 'var(--mantine-color-white)',
+                          }
+                        }}
+                      />
+                    ) : (
+                      <Text size="sm" c="dimmed">
+                        {movement.notes || '-'}
+                      </Text>
+                    )}
+                  </Grid.Col>
+
+                  {/* Ações */}
+                  <Grid.Col span={12}>
+                    <Group justify="flex-end" mt="sm">
+                      {editingMovement === movement.id ? (
+                        <>
+                          <ActionIcon
+                            variant="subtle"
+                            color="gray"
+                            onClick={() => cancelEditMovement()}
+                            size="sm"
+                          >
+                            <IconX size={16} />
+                          </ActionIcon>
+                          <ActionIcon
+                            variant="filled"
+                            color="blue"
+                            onClick={() => saveMovementChanges(movement.id)}
+                            disabled={!hasUnsavedChanges(movement.id)}
+                            loading={savingMovement}
+                            size="sm"
+                          >
+                            <IconDeviceFloppy size={16} />
+                          </ActionIcon>
+                        </>
+                      ) : (
+                        <>
+                          <ActionIcon
+                            variant="subtle"
+                            color="blue"
+                            onClick={() => startEditMovement(movement)}
+                            size="sm"
+                          >
+                            <IconEdit size={16} />
+                          </ActionIcon>
+                          <ActionIcon
+                            variant="subtle"
+                            color="red"
+                            onClick={() => deleteMovement(movement.id)}
+                            size="sm"
+                          >
+                            <IconTrash size={16} />
+                          </ActionIcon>
+                        </>
+                      )}
+                    </Group>
+                  </Grid.Col>
+                </Grid>
+              </Paper>
             ))}
-          </Table.Tbody>
-        </Table>
+
+            {selectedAssetHistory.length === 0 && (
+              <Paper p="xl" ta="center">
+                <Text c="dimmed">Nenhum movimento encontrado para este ativo.</Text>
+              </Paper>
+            )}
+          </Stack>
+        </ScrollArea>
       </Modal>
     </Stack>
   );
