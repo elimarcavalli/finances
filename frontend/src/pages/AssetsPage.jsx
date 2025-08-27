@@ -3,7 +3,6 @@ import {
   Title,
   Text,
   Stack,
-  Table,
   Button,
   Modal,
   TextInput,
@@ -13,13 +12,16 @@ import {
   Badge,
   ActionIcon,
   Avatar,
-  Center
+  Center,
+  Card,
+  ScrollArea
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useDisclosure } from '@mantine/hooks';
 import { IconPlus, IconEdit, IconTrash, IconRefresh, IconPhoto } from '@tabler/icons-react';
 import { useForm } from '@mantine/form';
 import api from '../api';
+import { AdvancedTable } from '../components/AdvancedTable';
 
 const ASSET_CLASSES = [
   { value: 'CRIPTO', label: 'Criptomoeda' },
@@ -41,8 +43,12 @@ export function AssetsPage() {
   const [updatingPrices, setUpdatingPrices] = useState(false);
   const [updatingIcons, setUpdatingIcons] = useState(false);
   const [updatingAsset, setUpdatingAsset] = useState(null);
+  const [updatingStocksBR, setUpdatingStocksBR] = useState(false);
+  const [updatingStocksUS, setUpdatingStocksUS] = useState(false);
   const [opened, { open, close }] = useDisclosure(false);
   const [editingAsset, setEditingAsset] = useState(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState('');
+  const [imageError, setImageError] = useState(false);
 
   const form = useForm({
     initialValues: {
@@ -121,9 +127,12 @@ export function AssetsPage() {
       name: asset.name,
       asset_class: asset.asset_class,
       price_api_identifier: asset.price_api_identifier || '',
+      icon_url: asset.icon_url || '',
       last_price_usdt: asset.last_price_usdt || '',
       last_price_brl: asset.last_price_brl || ''
     });
+    setImagePreviewUrl(asset.icon_url || '');
+    setImageError(false);
     open();
   };
 
@@ -151,6 +160,8 @@ export function AssetsPage() {
   const openNewAssetModal = () => {
     setEditingAsset(null);
     form.reset();
+    setImagePreviewUrl('');
+    setImageError(false);
     open();
   };
 
@@ -239,6 +250,145 @@ export function AssetsPage() {
     }
   };
 
+  const updateStockPricesBulk = async (assetClass) => {
+    const isUpdatingBR = assetClass === 'ACAO_BR';
+    const setUpdatingState = isUpdatingBR ? setUpdatingStocksBR : setUpdatingStocksUS;
+    
+    setUpdatingState(true);
+    
+    // Circuit Breaker: contador de erros consecutivos
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 10;
+    
+    try {
+      // Buscar todos os assets da classe específica primeiro
+      const assetsResponse = await api.get('/assets');
+      const targetAssets = assetsResponse.data.assets.filter(asset => asset.asset_class === assetClass);
+      
+      if (targetAssets.length === 0) {
+        notifications.show({
+          title: 'Aviso',
+          message: `Nenhum ativo da classe ${assetClass} encontrado`,
+          color: 'yellow'
+        });
+        return;
+      }
+      
+      let successCount = 0;
+      let totalErrors = [];
+      
+      // Atualizar cada ativo individualmente com circuit breaker
+      for (let i = 0; i < targetAssets.length; i++) {
+        const asset = targetAssets[i];
+        
+        // Verificar se atingimos o limite de erros consecutivos
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          notifications.show({
+            title: 'Processo Interrompido',
+            message: `Muitas falhas consecutivas (${MAX_CONSECUTIVE_ERRORS}). Processo interrompido para evitar sobrecarga da API.`,
+            color: 'red',
+            autoClose: 8000
+          });
+          break;
+        }
+        
+        try {
+          const response = await api.post(`/assets/${asset.id}/update-price`);
+          
+          if (response.data.success) {
+            successCount++;
+            consecutiveErrors = 0; // Reset contador em caso de sucesso
+            
+            // Mostrar progresso a cada 5 sucessos ou no final
+            if (successCount % 5 === 0 || i === targetAssets.length - 1) {
+              notifications.show({
+                title: 'Progresso',
+                message: `${successCount}/${targetAssets.length} ações atualizadas com sucesso`,
+                color: 'blue',
+                autoClose: 2000
+              });
+            }
+          } else {
+            consecutiveErrors++;
+            totalErrors.push(`${asset.symbol}: ${response.data.error || 'Erro desconhecido'}`);
+          }
+          
+        } catch (error) {
+          consecutiveErrors++;
+          const errorMsg = error.response?.data?.detail || error.message || 'Erro de conexão';
+          totalErrors.push(`${asset.symbol}: ${errorMsg}`);
+          
+          // Log do erro para debug
+          console.warn(`Erro ao atualizar ${asset.symbol}:`, error);
+        }
+        
+        // Delay pequeno entre requests para não sobrecarregar a API
+        if (i < targetAssets.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      }
+      
+      // Relatório final
+      if (successCount > 0) {
+        notifications.show({
+          title: 'Atualização Concluída!',
+          message: `${successCount}/${targetAssets.length} ações atualizadas com sucesso`,
+          color: 'green',
+          autoClose: 5000
+        });
+      }
+      
+      if (totalErrors.length > 0) {
+        notifications.show({
+          title: 'Avisos',
+          message: `${totalErrors.length} ações não puderam ser atualizadas. Verifique o console para detalhes.`,
+          color: 'yellow',
+          autoClose: 5000
+        });
+        console.warn('Erros na atualização:', totalErrors);
+      }
+      
+      // Recarregar a lista
+      fetchAssets();
+      
+    } catch (error) {
+      console.error('Erro ao buscar ativos para atualização:', error);
+      notifications.show({
+        title: 'Erro',
+        message: error.response?.data?.detail || 'Erro ao buscar lista de ativos para atualização',
+        color: 'red'
+      });
+    } finally {
+      setUpdatingState(false);
+    }
+  };
+
+  const updateStockPrice = async (assetId) => {
+    setUpdatingAsset(assetId);
+    try {
+      const response = await api.post(`/assets/${assetId}/update-price`);
+      
+      notifications.show({
+        title: 'Sucesso!',
+        message: `Preço de ${response.data.symbol} atualizado: R$ ${response.data.price_brl.toFixed(2)}`,
+        color: 'green',
+        autoClose: 3000
+      });
+      
+      // Recarregar a lista
+      fetchAssets();
+    } catch (error) {
+      console.error('Erro ao atualizar preço da ação:', error);
+      notifications.show({
+        title: 'Erro',
+        message: error.response?.data?.detail || 'Erro ao atualizar preço da ação',
+        color: 'red'
+      });
+    } finally {
+      setUpdatingAsset(null);
+    }
+  };
+
   const formatPrice = (price, currency = 'BRL') => {
     if (!price || price === 0) return '-';
     
@@ -285,66 +435,143 @@ export function AssetsPage() {
     return colors[assetClass] || 'gray';
   };
 
-  const rows = assets.map((asset) => (
-    <Table.Tr key={asset.id}>
-      <Table.Td>
+  // Configuração das colunas para AdvancedTable
+  const columns = [
+    {
+      accessor: 'symbol',
+      header: 'Símbolo',
+      sortable: true,
+      filterable: true,
+      filterType: 'text',
+      filterPlaceholder: 'Filtrar por símbolo...',
+      render: (row) => (
         <Group gap="sm">
-          {asset.icon_url ? (
-            <Avatar src={asset.icon_url} size="sm" radius="xl" />
+          {row.icon_url ? (
+            <Avatar src={row.icon_url} size="sm" radius="xl" />
           ) : (
             <Center style={{ width: 32, height: 32 }}>
               <Text size="xs" fw={600} color="dimmed">
-                {asset.symbol.slice(0, 2)}
+                {row.symbol.slice(0, 2)}
               </Text>
             </Center>
           )}
-          <Text fw={500}>{asset.symbol}</Text>
+          <Text fw={500} size="sm">{row.symbol}</Text>
         </Group>
-      </Table.Td>
-      <Table.Td>{asset.name}</Table.Td>
-      <Table.Td>
-        <Badge color={getAssetClassColor(asset.asset_class)} variant="light">
-          {ASSET_CLASSES.find(ac => ac.value === asset.asset_class)?.label || asset.asset_class}
+      )
+    },
+    {
+      accessor: 'name',
+      header: 'Nome',
+      sortable: true,
+      filterable: true,
+      filterType: 'text',
+      filterPlaceholder: 'Filtrar por nome...',
+      render: (row) => <Text size="sm">{row.name}</Text>
+    },
+    {
+      accessor: 'asset_class',
+      header: 'Classe',
+      sortable: true,
+      filterable: true,
+      filterType: 'select',
+      filterOptions: ASSET_CLASSES,
+      render: (row) => (
+        <Badge color={getAssetClassColor(row.asset_class)} variant="light" size="sm">
+          {ASSET_CLASSES.find(ac => ac.value === row.asset_class)?.label || row.asset_class}
         </Badge>
-      </Table.Td>
-      <Table.Td>{asset.price_api_identifier || '-'}</Table.Td>
-      <Table.Td>{formatPrice(asset.last_price_usdt, 'USD')}</Table.Td>
-      <Table.Td>{formatPrice(asset.last_price_brl, 'BRL')}</Table.Td>
-      <Table.Td>{formatDate(asset.last_price_updated_at)}</Table.Td>
-      <Table.Td>
+      )
+    },
+    {
+      accessor: 'price_api_identifier',
+      header: 'ID CoinGecko',
+      sortable: true,
+      filterable: true,
+      filterType: 'text',
+      filterPlaceholder: 'Filtrar por ID...',
+      render: (row) => <Text size="sm">{row.price_api_identifier || '-'}</Text>
+    },
+    {
+      accessor: 'last_price_usdt',
+      header: 'Preço (USDT)',
+      sortable: true,
+      filterable: false,
+      align: 'right',
+      render: (row) => <Text size="sm">{formatPrice(row.last_price_usdt, 'USD')}</Text>
+    },
+    {
+      accessor: 'last_price_brl',
+      header: 'Preço (BRL)',
+      sortable: true,
+      filterable: false,
+      align: 'right',
+      render: (row) => <Text size="sm">{formatPrice(row.last_price_brl, 'BRL')}</Text>
+    },
+    {
+      accessor: 'last_price_updated_at',
+      header: 'Última Atualização',
+      sortable: true,
+      filterable: false,
+      render: (row) => <Text size="sm">{formatDate(row.last_price_updated_at)}</Text>
+    },
+    {
+      accessor: 'actions',
+      header: 'Ações',
+      sortable: false,
+      filterable: false,
+      align: 'center',
+      render: (row) => (
         <Group gap="xs">
-          {asset.asset_class === 'CRIPTO' && asset.price_api_identifier && (
+          {row.asset_class === 'CRIPTO' && row.price_api_identifier && (
             <ActionIcon
               variant="light"
               color="green"
-              loading={updatingAsset === asset.id}
-              onClick={() => updateAssetPrice(asset.id)}
+              loading={updatingAsset === row.id}
+              onClick={() => updateAssetPrice(row.id)}
               disabled={updatingPrices}
+              title="Atualizar preço cripto"
+              size="sm"
             >
-              <IconRefresh size={16} />
+              <IconRefresh size={14} />
+            </ActionIcon>
+          )}
+          {(row.asset_class === 'ACAO_BR' || row.asset_class === 'ACAO_US') && (
+            <ActionIcon
+              variant="light"
+              color={row.asset_class === 'ACAO_BR' ? 'teal' : 'indigo'}
+              loading={updatingAsset === row.id}
+              onClick={() => updateStockPrice(row.id)}
+              disabled={updatingStocksBR || updatingStocksUS}
+              title={`Atualizar via ${row.asset_class === 'ACAO_BR' ? 'Alpha Vantage' : 'Finnhub'}`}
+              size="sm"
+            >
+              <IconRefresh size={14} />
             </ActionIcon>
           )}
           <ActionIcon
             variant="light"
             color="blue"
-            onClick={() => handleEdit(asset)}
+            onClick={() => handleEdit(row)}
+            size="sm"
           >
-            <IconEdit size={16} />
+            <IconEdit size={14} />
           </ActionIcon>
           <ActionIcon
             variant="light"
             color="red"
-            onClick={() => handleDelete(asset.id)}
+            onClick={() => handleDelete(row.id)}
+            size="sm"
           >
-            <IconTrash size={16} />
+            <IconTrash size={14} />
           </ActionIcon>
         </Group>
-      </Table.Td>
-    </Table.Tr>
-  ));
+      )
+    }
+  ];
+
 
   return (
-    <Stack gap="md">
+    <div className="page-with-advanced-table">
+      <div className="page-header">
       <Group justify="space-between">
         <div>
           <Title order={2}>Gerenciador de Ativos</Title>
@@ -362,7 +589,27 @@ export function AssetsPage() {
           >
             Atualizar Criptos (menos USDT)
           </Button>
-          {/* <Button 
+          <Button 
+            variant="light" 
+            color="teal"
+            leftSection={<IconRefresh size={16} />} 
+            onClick={() => updateStockPricesBulk('ACAO_BR')}
+            loading={updatingStocksBR}
+            disabled={updatingStocksUS}
+          >
+            Atualizar Ações (BR)
+          </Button>
+          <Button 
+            variant="light" 
+            color="indigo"
+            leftSection={<IconRefresh size={16} />} 
+            onClick={() => updateStockPricesBulk('ACAO_US')}
+            loading={updatingStocksUS}
+            disabled={updatingStocksBR}
+          >
+            Atualizar Ações (US)
+          </Button>
+          <Button 
             variant="light" 
             color="orange"
             leftSection={<IconPhoto size={16} />} 
@@ -371,59 +618,57 @@ export function AssetsPage() {
             disabled={updatingPrices}
           >
             Atualizar Ícones
-          </Button> */}
+          </Button>
           <Button leftSection={<IconPlus size={16} />} onClick={openNewAssetModal}>
             Novo Ativo
           </Button>
         </Group>
       </Group>
 
-      <Table striped highlightOnHover>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Símbolo</Table.Th>
-            <Table.Th>Nome</Table.Th>
-            <Table.Th>Classe</Table.Th>
-            <Table.Th>ID CoinGecko</Table.Th>
-            <Table.Th>Preço (USDT)</Table.Th>
-            <Table.Th>Preço (BRL)</Table.Th>
-            <Table.Th>Última Atualização</Table.Th>
-            <Table.Th>Ações</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {loading ? (
-            <Table.Tr>
-              <Table.Td colSpan={8} style={{ textAlign: 'center' }}>
-                Carregando...
-              </Table.Td>
-            </Table.Tr>
-          ) : rows.length > 0 ? (
-            rows
-          ) : (
-            <Table.Tr>
-              <Table.Td colSpan={8} style={{ textAlign: 'center' }}>
-                Nenhum ativo encontrado
-              </Table.Td>
-            </Table.Tr>
-          )}
-        </Table.Tbody>
-      </Table>
+      <div className="page-table-container">
+        <AdvancedTable
+          data={assets}
+          columns={columns}
+          emptyStateText={loading ? "Carregando ativos..." : "Nenhum ativo encontrado"}
+          emptyStateDescription="Adicione seu primeiro ativo para começar"
+        />
+      </div>
+    </div>
 
       <Modal
         opened={opened}
-        onClose={close}
+        onClose={() => {
+          close();
+          setImagePreviewUrl('');
+          setImageError(false);
+        }}
         title={editingAsset ? 'Editar Ativo' : 'Novo Ativo'}
         size="md"
       >
         <form onSubmit={form.onSubmit(handleSubmit)}>
           <Stack gap="md">
-            <TextInput
-              label="Símbolo"
-              placeholder="Ex: BTC, PETR4, AAPL"
-              {...form.getInputProps('symbol')}
-              required
-            />
+            <Group align="flex-end" gap="md">
+              {(imagePreviewUrl || form.values.icon_url) && !imageError && (
+                <Avatar 
+                src={imagePreviewUrl || form.values.icon_url} 
+                size="lg" 
+                radius="md"
+                onError={() => setImageError(true)}
+                />
+              )}
+              {(imagePreviewUrl || form.values.icon_url) && imageError && (
+                <Center style={{ width: 48, height: 48, border: '1px dashed #ccc', borderRadius: '8px' }}>
+                  <Text size="xs" c="dimmed">Erro</Text>
+                </Center>
+              )}
+              <TextInput
+                label="Símbolo"
+                placeholder="Ex: BTC, PETR4, AAPL"
+                {...form.getInputProps('symbol')}
+                required
+                style={{ flex: 1 }}
+              />
+            </Group>
             
             <TextInput
               label="Nome"
@@ -450,8 +695,14 @@ export function AssetsPage() {
             <TextInput
               label="URL do Ícone (opcional)"
               placeholder="Ex: https://coin-images.coingecko.com/coins/images/1/large/bitcoin.png"
-              description="URL da imagem do ativo"
+              description="URL da imagem do ativo - Preview será atualizado automaticamente"
               {...form.getInputProps('icon_url')}
+              onChange={(event) => {
+                const url = event.currentTarget.value;
+                form.setFieldValue('icon_url', url);
+                setImagePreviewUrl(url);
+                setImageError(false);
+              }}
             />
 
             <NumberInput
@@ -469,7 +720,11 @@ export function AssetsPage() {
             />
             
             <Group justify="flex-end" mt="md">
-              <Button variant="light" onClick={close}>
+              <Button variant="light" onClick={() => {
+                close();
+                setImagePreviewUrl('');
+                setImageError(false);
+              }}>
                 Cancelar
               </Button>
               <Button type="submit">
@@ -479,6 +734,6 @@ export function AssetsPage() {
           </Stack>
         </form>
       </Modal>
-    </Stack>
+    </div>
   );
 }

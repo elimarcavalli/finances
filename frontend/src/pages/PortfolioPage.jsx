@@ -18,7 +18,13 @@ import {
   Loader,
   Paper,
   Progress,
-  ScrollArea
+  ScrollArea,
+  Avatar,
+  Center,
+  Menu,
+  UnstyledButton,
+  Popover,
+  RangeSlider
 } from '@mantine/core';
 import { DatePickerInput, DateInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
@@ -36,7 +42,12 @@ import {
   IconEdit,
   IconTrash,
   IconX,
-  IconDeviceFloppy
+  IconDeviceFloppy,
+  IconFilter,
+  IconSortAscending,
+  IconSortDescending,
+  IconPlus as IconPlusDecimal,
+  IconMinus
 } from '@tabler/icons-react';
 import api from '../api';
 
@@ -45,6 +56,19 @@ const MOVEMENT_TYPES = [
   { value: 'VENDA', label: 'Venda' },
   { value: 'TRANSFERENCIA_ENTRADA', label: 'Transferência Entrada' },
   { value: 'TRANSFERENCIA_SAIDA', label: 'Transferência Saída' }
+];
+
+const ASSET_CLASSES = [
+  { value: 'CRIPTO', label: 'Criptomoedas' },
+  { value: 'ACAO_BR', label: 'Ações Brasil' },
+  { value: 'ACAO_US', label: 'Ações EUA' },
+  { value: 'FUNDO', label: 'Fundos' },
+  { value: 'FII', label: 'FIIs' },
+  { value: 'COE', label: 'COEs' },
+  { value: 'RENDA_FIXA', label: 'Renda Fixa' },
+  { value: 'TESOURO', label: 'Tesouro' },
+  { value: 'COMMODITIES', label: 'Commodities' },
+  { value: 'OUTROS', label: 'Outros' }
 ];
 
 export function PortfolioPage() {
@@ -66,6 +90,18 @@ export function PortfolioPage() {
   const [priceCurrency, setPriceCurrency] = useState('BRL');
   const [usdtToBrlRate, setUsdtToBrlRate] = useState(null);
   const [editPriceCurrency, setEditPriceCurrency] = useState('BRL');
+  
+  // Estados para filtros e ordenação
+  const [sortField, setSortField] = useState('market_value_brl');
+  const [sortDirection, setSortDirection] = useState('desc');
+  const [filters, setFilters] = useState({
+    name: '',
+    asset_class: '',
+    market_value_range: [0, 0]
+  });
+  const [openedPopovers, setOpenedPopovers] = useState({});
+  const [quantityPrecision, setQuantityPrecision] = useState(4);
+  const [localMarketValueRange, setLocalMarketValueRange] = useState([0, 0]);
 
   const form = useForm({
     initialValues: {
@@ -173,6 +209,94 @@ export function PortfolioPage() {
       setAssetPrice(null);
     }
   }, [form.values.asset_id, modalOpened]);
+
+  // Calcular o range máximo para o filtro de valor de mercado usando useMemo
+  const maxMarketValue = React.useMemo(() => {
+    return Math.max(...portfolio.map(p => Number(p.market_value_brl) || 0), 0);
+  }, [portfolio]);
+
+  // Sincronizar localMarketValueRange com filters.market_value_range
+  useEffect(() => {
+    setLocalMarketValueRange(filters.market_value_range);
+  }, [filters.market_value_range]);
+
+  // Atualizar o range máximo se necessário
+  useEffect(() => {
+    if (maxMarketValue > 0 && filters.market_value_range[1] === 0) {
+      const newRange = [0, maxMarketValue];
+      setFilters(prev => ({
+        ...prev,
+        market_value_range: newRange
+      }));
+      setLocalMarketValueRange(newRange);
+    }
+  }, [maxMarketValue, filters.market_value_range]);
+
+  // Funções de filtro e ordenação
+  const handleSort = (field) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('desc');
+    }
+  };
+
+  const applyFilters = (portfolioData) => {
+    return portfolioData.filter(position => {
+      // Filtro por nome do ativo (incluindo símbolo)
+      if (filters.name) {
+        const searchTerm = filters.name.toLowerCase();
+        const matchesName = position.name.toLowerCase().includes(searchTerm);
+        const matchesSymbol = position.symbol && position.symbol.toLowerCase().includes(searchTerm);
+        
+        if (!matchesName && !matchesSymbol) {
+          return false;
+        }
+      }
+      
+      // Filtro por classe do ativo
+      if (filters.asset_class && position.asset_class !== filters.asset_class) {
+        return false;
+      }
+      
+      // Filtro por valor de mercado (range)
+      const marketValue = Number(position.market_value_brl) || 0;
+      const [minValue, maxValue] = filters.market_value_range;
+      if (maxValue > 0 && (marketValue < minValue || marketValue > maxValue)) {
+        return false;
+      }
+      
+      return true;
+    });
+  };
+
+  const filteredAndSortedPortfolio = React.useMemo(() => {
+    const filtered = applyFilters(portfolio);
+    
+    return filtered.sort((a, b) => {
+      const aValue = a[sortField] || 0;
+      const bValue = b[sortField] || 0;
+      
+      if (sortDirection === 'asc') {
+        return aValue > bValue ? 1 : -1;
+      } else {
+        return aValue < bValue ? 1 : -1;
+      }
+    });
+  }, [portfolio, filters, sortField, sortDirection]);
+
+  const clearFilters = () => {
+    setFilters({
+      name: '',
+      asset_class: '',
+      market_value_range: [0, maxMarketValue]
+    });
+    setOpenedPopovers({});
+  };
+
+  const hasActiveFilters = filters.name || filters.asset_class || 
+    (filters.market_value_range[0] > 0 || filters.market_value_range[1] < maxMarketValue);
 
   const handleAddMovement = async (values) => {
     setLoading(true);
@@ -346,17 +470,23 @@ export function PortfolioPage() {
     }).format(value);
   };
 
-  // Função para formatar números com até 18 casas decimais, removendo zeros à direita
-  const formatPrecisionNumber = (value, maxDecimals = 18) => {
+  // Função para formatar números com precisão específica
+  const formatPrecisionNumber = (value, precision = 18) => {
     if (!value || value === 0) return '0';
     
     const num = parseFloat(value);
     if (isNaN(num)) return '0';
     
-    // Formatar com máximo de casas decimais
-    const formatted = num.toFixed(maxDecimals);
+    // Se precision é específico (não o padrão 18), mostrar exatamente essa quantidade de casas decimais
+    if (precision !== 18) {
+      return num.toLocaleString('pt-BR', {
+        minimumFractionDigits: precision,
+        maximumFractionDigits: precision
+      });
+    }
     
-    // Remover zeros à direita e ponto decimal desnecessário
+    // Para o padrão (18), remover zeros à direita
+    const formatted = num.toFixed(precision);
     return formatted.replace(/\.?0+$/, '');
   };
 
@@ -401,6 +531,7 @@ export function PortfolioPage() {
   const getPercentageColor = (value) => {
     return value >= 0 ? 'green' : 'red';
   };
+
 
   const fetchAssetPrice = async (assetId) => {
     if (!assetId) {
@@ -629,6 +760,194 @@ export function PortfolioPage() {
     );
   }
 
+  // Componentes de filtro
+  const TextFilterMenu = ({ field, placeholder }) => {
+    const isOpen = openedPopovers[field] || false;
+    
+    const togglePopover = (e) => {
+      e.stopPropagation();
+      setOpenedPopovers(prev => ({ ...prev, [field]: !prev[field] }));
+    };
+
+    const closePopover = () => {
+      setOpenedPopovers(prev => ({ ...prev, [field]: false }));
+    };
+
+    return (
+      <Popover 
+        width={200} 
+        position="bottom-start" 
+        withArrow 
+        shadow="md"
+        opened={isOpen}
+        onChange={(opened) => {
+          if (!opened) {
+            setOpenedPopovers(prev => ({ ...prev, [field]: false }));
+          }
+        }}
+      >
+        <Popover.Target>
+          <ActionIcon 
+            variant="subtle" 
+            size="sm"
+            onClick={togglePopover}
+            color={filters[field] ? 'blue' : 'gray'}
+          >
+            <IconFilter size={12} />
+          </ActionIcon>
+        </Popover.Target>
+        <Popover.Dropdown>
+          <div style={{ padding: '4px' }}>
+            <TextInput
+              placeholder={placeholder}
+              value={filters[field]}
+              onChange={(e) => {
+                setFilters(prev => ({ ...prev, [field]: e.target.value }));
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  closePopover();
+                  e.target.blur();
+                }
+              }}
+              size="xs"
+              autoFocus
+              rightSection={
+                filters[field] && (
+                  <ActionIcon 
+                    size="xs" 
+                    onClick={() => setFilters(prev => ({ ...prev, [field]: '' }))}
+                  >
+                    ✕
+                  </ActionIcon>
+                )
+              }
+            />
+          </div>
+        </Popover.Dropdown>
+      </Popover>
+    );
+  };
+
+  const ClassFilterMenu = () => (
+    <Menu shadow="md" width={250}>
+      <Menu.Target>
+        <ActionIcon 
+          variant="subtle" 
+          size="sm"
+          onClick={(e) => e.stopPropagation()}
+          color={filters.asset_class ? 'blue' : 'gray'}
+        >
+          <IconFilter size={12} />
+        </ActionIcon>
+      </Menu.Target>
+      <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+        <Menu.Item 
+          onClick={() => setFilters(prev => ({ ...prev, asset_class: '' }))}
+          rightSection={!filters.asset_class ? '✓' : ''}
+        >
+          Todas as classes
+        </Menu.Item>
+        {ASSET_CLASSES.map((assetClass) => (
+          <Menu.Item 
+            key={assetClass.value}
+            onClick={() => setFilters(prev => ({ ...prev, asset_class: assetClass.value }))}
+            rightSection={filters.asset_class === assetClass.value ? '✓' : ''}
+          >
+            {assetClass.label}
+          </Menu.Item>
+        ))}
+      </Menu.Dropdown>
+    </Menu>
+  );
+
+  const PrecisionControl = () => (
+    <Group gap="xs">
+      <ActionIcon 
+        variant="subtle" 
+        size="sm"
+        onClick={() => setQuantityPrecision(Math.max(0, quantityPrecision - 1))}
+        disabled={quantityPrecision <= 0}
+      >
+        <IconMinus size={12} />
+      </ActionIcon>
+      <ActionIcon 
+        variant="subtle" 
+        size="sm"
+        onClick={() => setQuantityPrecision(Math.min(8, quantityPrecision + 1))}
+        disabled={quantityPrecision >= 8}
+      >
+        <IconPlusDecimal size={12} />
+      </ActionIcon>
+    </Group>
+  );
+
+  const RangeFilterMenu = () => {
+    
+    return (
+      <Popover width={300} position="bottom-start" withArrow shadow="md">
+        <Popover.Target>
+          <ActionIcon 
+            variant="subtle" 
+            size="sm"
+            onClick={(e) => e.stopPropagation()}
+            color={filters.market_value_range[0] > 0 || filters.market_value_range[1] < maxMarketValue ? 'blue' : 'gray'}
+          >
+            <IconFilter size={12} />
+          </ActionIcon>
+        </Popover.Target>
+        <Popover.Dropdown>
+          <div style={{ padding: '12px' }} onClick={(e) => e.stopPropagation()}>
+            <Text size="xs" mb="xs">Valor de Mercado</Text>
+            <RangeSlider
+              value={localMarketValueRange}
+              onChange={setLocalMarketValueRange}
+              onChangeEnd={(value) => setFilters(prev => ({ ...prev, market_value_range: value }))}
+              min={0}
+              max={maxMarketValue}
+              step={maxMarketValue / 100}
+              formatLabel={(value) => `R$ ${value.toLocaleString('pt-BR')}`}
+              size="sm"
+            />
+            <Group justify="space-between" mt="xs">
+              <Text size="xs">R$ {localMarketValueRange[0].toLocaleString('pt-BR')}</Text>
+              <Text size="xs">R$ {localMarketValueRange[1].toLocaleString('pt-BR')}</Text>
+            </Group>
+            <Group justify="space-between" mt="xs">
+              <Button 
+                size="xs" 
+                variant="light"
+                onClick={() => {
+                  setLocalMarketValueRange([0, maxMarketValue]);
+                  setFilters(prev => ({ ...prev, market_value_range: [0, maxMarketValue] }));
+                }}
+              >
+                Limpar
+              </Button>
+            </Group>
+          </div>
+        </Popover.Dropdown>
+      </Popover>
+    );
+  };
+
+  const SortableHeader = ({ field, children, filterType = 'none', filterPlaceholder = '' }) => (
+    <Group gap="xs" justify="flex-start" style={{ width: '100%' }}>
+      {filterType === 'text' && <TextFilterMenu field={field} placeholder={filterPlaceholder} />}
+      {filterType === 'class' && <ClassFilterMenu />}
+      {filterType === 'precision' && <PrecisionControl />}
+      {filterType === 'range' && <RangeFilterMenu />}
+      <UnstyledButton onClick={() => handleSort(field)} style={{ flex: 1, textAlign: 'left' }}>
+        <Group gap="xs">
+          <Text fw={500} size="sm">{children}</Text>
+          {sortField === field && (
+            sortDirection === 'asc' ? <IconSortAscending size={12} /> : <IconSortDescending size={12} />
+          )}
+        </Group>
+      </UnstyledButton>
+    </Group>
+  );
+
   return (
     <Stack gap="lg">
       <Group justify="space-between">
@@ -669,6 +988,27 @@ export function PortfolioPage() {
         <Alert icon={<IconAlertCircle size="1rem" />} color="red">
           {error}
         </Alert>
+      )}
+
+      {/* Indicador de filtros ativos */}
+      {(filters.asset_name || filters.asset_class || (filters.market_value_range[0] > 0 || filters.market_value_range[1] < maxMarketValue)) && (
+        <Group justify="center">
+          <Group gap="xs">
+            <Text size="sm" c="dimmed">
+              Filtros ativos: {filteredAndSortedPortfolio.length} de {portfolio.length} posições
+            </Text>
+            <Button 
+              variant="light" 
+              size="xs"
+              onClick={() => {
+                setFilters({ asset_name: '', asset_class: '', market_value_range: [0, maxMarketValue] });
+                setOpenedPopovers({});
+              }}
+            >
+              Limpar Filtros
+            </Button>
+          </Group>
+        </Group>
       )}
 
       {/* Resumo do Portfólio */}
@@ -721,22 +1061,68 @@ export function PortfolioPage() {
 
       {/* Tabela do Portfólio */}
       <Card withBorder>
-        <Table striped highlightOnHover>
-          <Table.Thead>
+        <ScrollArea style={{ height: 'calc(100vh - 400px)', minHeight: '400px' }}>
+          <Table striped highlightOnHover stickyHeader>
+          <Table.Thead style={{ position: 'sticky', top: 0, zIndex: 1, backgroundColor: 'white' }}>
             <Table.Tr>
-              <Table.Th>Ativo</Table.Th>
-              <Table.Th>Classe</Table.Th>
-              <Table.Th ta="right">Quantidade</Table.Th>
-              <Table.Th ta="right">Preço Médio</Table.Th>
-              <Table.Th ta="right">Preço Atual</Table.Th>
-              <Table.Th ta="right">Valor de Mercado</Table.Th>
-              <Table.Th ta="right">P&L %</Table.Th>
-              <Table.Th ta="right">P&L Valor</Table.Th>
+              <Table.Th>
+                <SortableHeader 
+                  field="name" 
+                  filterType="text" 
+                  filterPlaceholder="Filtrar por ativo..."
+                >
+                  Ativo
+                </SortableHeader>
+              </Table.Th>
+              <Table.Th>
+                <SortableHeader 
+                  field="asset_class" 
+                  filterType="class"
+                >
+                  Classe
+                </SortableHeader>
+              </Table.Th>
+              <Table.Th ta="right">
+                <SortableHeader 
+                  field="quantity" 
+                  filterType="precision"
+                >
+                  Quantidade
+                </SortableHeader>
+              </Table.Th>
+              <Table.Th ta="right">
+                <SortableHeader field="average_price_brl">
+                  Preço Médio
+                </SortableHeader>
+              </Table.Th>
+              <Table.Th ta="right">
+                <SortableHeader field="current_price_brl">
+                  Preço Atual
+                </SortableHeader>
+              </Table.Th>
+              <Table.Th ta="right">
+                <SortableHeader 
+                  field="market_value_brl" 
+                  filterType="range"
+                >
+                  Valor de Mercado
+                </SortableHeader>
+              </Table.Th>
+              <Table.Th ta="right">
+                <SortableHeader field="unrealized_pnl_percentage_brl">
+                  P&L %
+                </SortableHeader>
+              </Table.Th>
+              <Table.Th ta="right">
+                <SortableHeader field="unrealized_pnl_brl">
+                  P&L Valor
+                </SortableHeader>
+              </Table.Th>
               <Table.Th width={80}>Ações</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
-            {portfolio.length === 0 ? (
+            {filteredAndSortedPortfolio.length === 0 ? (
               <Table.Tr>
                 <Table.Td colSpan={9} style={{ textAlign: 'center', padding: '2rem' }}>
                   <Stack gap="md" align="center">
@@ -751,13 +1137,24 @@ export function PortfolioPage() {
                 </Table.Td>
               </Table.Tr>
             ) : (
-              portfolio.map((position) => (
+              filteredAndSortedPortfolio.map((position) => (
                 <Table.Tr key={position.asset_id}>
                   <Table.Td>
-                    <div>
-                      <Text fw={500} size="sm">{position.symbol}</Text>
-                      <Text size="xs" c="dimmed">{position.name}</Text>
-                    </div>
+                    <Group gap="sm">
+                      {position.icon_url ? (
+                        <Avatar src={position.icon_url} size="sm" radius="xl" />
+                      ) : (
+                        <Center style={{ width: 32, height: 32 }}>
+                          <Text size="xs" fw={600} color="dimmed">
+                            {position.symbol.slice(0, 2)}
+                          </Text>
+                        </Center>
+                      )}
+                      <div>
+                        <Text fw={500} size="sm">{position.symbol}</Text>
+                        <Text size="xs" c="dimmed">{position.name}</Text>
+                      </div>
+                    </Group>
                   </Table.Td>
                   <Table.Td>
                     <Badge variant="light" size="sm">
@@ -766,7 +1163,7 @@ export function PortfolioPage() {
                   </Table.Td>
                   <Table.Td ta="right">
                     <Text size="sm" family="monospace">
-                      {formatPrecisionNumber(position.quantity)}
+                      {formatPrecisionNumber(position.quantity, quantityPrecision)}
                     </Text>
                   </Table.Td>
                   <Table.Td ta="right">
@@ -818,7 +1215,89 @@ export function PortfolioPage() {
               ))
             )}
           </Table.Tbody>
+          
+          {/* Rodapé com Totalizadores dentro da mesma tabela */}
+          <Table.Tfoot style={{ 
+            position: 'sticky', 
+            bottom: 0, 
+            zIndex: 1,
+            backgroundColor: 'black'
+          }}>
+            <Table.Tr style={{ 
+              backgroundColor: 'black', 
+              borderTop: '2px solid black'
+            }}>
+              {/* Coluna 1: Ativo */}
+              <Table.Td>
+                <Text size="sm" fw={600}>
+                  {filteredAndSortedPortfolio.length} posições
+                </Text>
+              </Table.Td>
+              {/* Coluna 2: Classe */}
+              <Table.Td></Table.Td>
+              {/* Coluna 3: Quantidade */}
+              <Table.Td></Table.Td>
+              {/* Coluna 4: Preço Médio */}
+              <Table.Td></Table.Td>
+              {/* Coluna 5: Preço Atual */}
+              <Table.Td></Table.Td>
+              {/* Coluna 6: Valor de Mercado */}
+              <Table.Td ta="right">
+                <Text size="sm" fw={600}>
+                  {formatCurrency(
+                    filteredAndSortedPortfolio.reduce((sum, pos) => sum + (pos.market_value_brl || 0), 0)
+                  )}
+                </Text>
+              </Table.Td>
+              {/* Coluna 7: P&L % */}
+              <Table.Td ta="right">
+                <Text size="sm" fw={600} c={
+                  (() => {
+                    const totalMarketValue = filteredAndSortedPortfolio.reduce((sum, pos) => sum + (pos.market_value_brl || 0), 0);
+                    const totalPnl = filteredAndSortedPortfolio.reduce((sum, pos) => sum + (pos.unrealized_pnl_brl || 0), 0);
+                    const totalPercentage = totalMarketValue > 0 ? (totalPnl / (totalMarketValue - totalPnl)) * 100 : 0;
+                    return totalPercentage >= 0 ? 'green' : 'red';
+                  })()
+                }>
+                  {(() => {
+                    const totalMarketValue = filteredAndSortedPortfolio.reduce((sum, pos) => sum + (pos.market_value_brl || 0), 0);
+                    const totalPnl = filteredAndSortedPortfolio.reduce((sum, pos) => sum + (pos.unrealized_pnl_brl || 0), 0);
+                    const totalPercentage = totalMarketValue > 0 ? (totalPnl / (totalMarketValue - totalPnl)) * 100 : 0;
+                    return `${totalPercentage >= 0 ? '+' : ''}${totalPercentage.toFixed(2)}%`;
+                  })()}
+                </Text>
+              </Table.Td>
+              {/* Coluna 8: P&L Valor */}
+              <Table.Td ta="right">
+                <Text size="sm" fw={600} c={
+                  filteredAndSortedPortfolio.reduce((sum, pos) => sum + (pos.unrealized_pnl_brl || 0), 0) >= 0 
+                    ? 'green' : 'red'
+                }>
+                  {formatCurrency(
+                    filteredAndSortedPortfolio.reduce((sum, pos) => sum + (pos.unrealized_pnl_brl || 0), 0)
+                  )}
+                </Text>
+              </Table.Td>
+              {/* Coluna 9: Ações */}
+              <Table.Td width={80}></Table.Td>
+            </Table.Tr>
+          </Table.Tfoot>
         </Table>
+        </ScrollArea>
+        
+        {/* Botão Limpar Filtros */}
+        {(filters.name || filters.asset_class || 
+          (filters.market_value_range[0] > 0 || filters.market_value_range[1] < maxMarketValue)) && (
+          <Group justify="center" mt="md">
+            <Button 
+              variant="light" 
+              size="sm"
+              onClick={clearFilters}
+            >
+              Limpar Filtros
+            </Button>
+          </Group>
+        )}
       </Card>
 
       {/* Modal de Adicionar Movimento */}
@@ -1119,7 +1598,7 @@ export function PortfolioPage() {
                       />
                     ) : (
                       <Text size="sm" family="monospace">
-                        {formatPrecisionNumber(movement.quantity)}
+                        {formatPrecisionNumber(movement.quantity, quantityPrecision)}
                       </Text>
                     )}
                   </Grid.Col>

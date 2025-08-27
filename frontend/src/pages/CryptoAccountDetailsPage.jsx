@@ -14,10 +14,18 @@ import {
   Alert,
   Grid,
   Paper,
-  Divider
+  Divider,
+  Avatar,
+  Center,
+  ScrollArea,
+  ActionIcon,
+  UnstyledButton,
+  Popover,
+  TextInput,
+  Menu
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconArrowLeft, IconRefresh, IconWallet, IconTrendingUp } from '@tabler/icons-react';
+import { IconArrowLeft, IconRefresh, IconWallet, IconTrendingUp, IconFilter, IconSortAscending, IconSortDescending, IconSearch } from '@tabler/icons-react';
 import { useParams, Link } from 'react-router-dom';
 import api from '../api';
 
@@ -29,6 +37,15 @@ export function CryptoAccountDetailsPage() {
   const [loading, setLoading] = useState(false);
   const [portfolioLoading, setPortfolioLoading] = useState(false);
   const [movementsLoading, setMovementsLoading] = useState(false);
+  const [updatingPrices, setUpdatingPrices] = useState(false);
+
+  // Estados para filtros e ordenação
+  const [sortField, setSortField] = useState('market_value_brl');
+  const [sortDirection, setSortDirection] = useState('desc');
+  const [filters, setFilters] = useState({
+    name: ''
+  });
+  const [openedPopovers, setOpenedPopovers] = useState({});
 
   const fetchAccount = async () => {
     setLoading(true);
@@ -121,6 +138,47 @@ export function CryptoAccountDetailsPage() {
     fetchMovements();
   };
 
+  const updateCryptoPrices = async () => {
+    setUpdatingPrices(true);
+    try {
+      // Obter lista de asset_ids únicos das criptos na conta
+      const cryptoAssetIds = [...new Set(
+        portfolioSummary.map(position => position.asset_id)
+      )];
+
+      if (cryptoAssetIds.length === 0) {
+        notifications.show({
+          title: 'Aviso',
+          message: 'Nenhuma criptomoeda encontrada nesta conta',
+          color: 'yellow'
+        });
+        return;
+      }
+
+      const response = await api.post('/assets/update-prices', {
+        asset_ids: cryptoAssetIds
+      });
+      
+      notifications.show({
+        title: 'Sucesso',
+        message: `Preços atualizados! ${response.data.updated_count} ativo(s) processado(s)`,
+        color: 'green'
+      });
+      
+      // Recarregar dados do portfólio
+      await fetchPortfolioSummary();
+    } catch (error) {
+      console.error('Erro ao atualizar preços:', error);
+      notifications.show({
+        title: 'Erro',
+        message: error.response?.data?.detail || 'Não foi possível atualizar os preços',
+        color: 'red'
+      });
+    } finally {
+      setUpdatingPrices(false);
+    }
+  };
+
   const formatCurrency = (value, currency = 'BRL') => {
     if (value === null || value === undefined || value === 0) return 'R$ 0,00';
     return new Intl.NumberFormat('pt-BR', {
@@ -173,6 +231,101 @@ export function CryptoAccountDetailsPage() {
     return colors[assetClass] || 'gray';
   };
 
+  // Funções de filtro e ordenação
+  const handleSort = (field) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('desc');
+    }
+  };
+
+  const applyFilters = (portfolioData) => {
+    return portfolioData.filter(position => {
+      // Filtro por nome do ativo (incluindo símbolo)
+      if (filters.name) {
+        const searchTerm = filters.name.toLowerCase();
+        const matchesName = position.name && position.name.toLowerCase().includes(searchTerm);
+        const matchesSymbol = position.symbol && position.symbol.toLowerCase().includes(searchTerm);
+        
+        if (!matchesName && !matchesSymbol) {
+          return false;
+        }
+      }
+      
+      return true;
+    });
+  };
+
+  const clearFilters = () => {
+    setFilters({ name: '' });
+    setOpenedPopovers({});
+  };
+
+  // Componente de filtro de texto
+  const TextFilterMenu = ({ field, placeholder }) => {
+    const isOpen = openedPopovers[field] || false;
+    
+    const togglePopover = (e) => {
+      e.stopPropagation();
+      setOpenedPopovers(prev => ({ ...prev, [field]: !prev[field] }));
+    };
+
+    return (
+      <Popover 
+        width={200} 
+        position="bottom-start" 
+        withArrow 
+        shadow="md"
+        opened={isOpen}
+        onClose={() => setOpenedPopovers(prev => ({ ...prev, [field]: false }))}
+      >
+        <Popover.Target>
+          <ActionIcon 
+            variant="subtle" 
+            size="sm"
+            onClick={togglePopover}
+            color={filters[field] ? 'blue' : 'gray'}
+          >
+            <IconFilter size={12} />
+          </ActionIcon>
+        </Popover.Target>
+        <Popover.Dropdown>
+          <TextInput
+            placeholder={placeholder}
+            value={filters[field]}
+            onChange={(e) => setFilters(prev => ({ ...prev, [field]: e.target.value }))}
+            leftSection={<IconSearch size={14} />}
+            size="xs"
+            autoFocus
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Escape') {
+                setOpenedPopovers(prev => ({ ...prev, [field]: false }));
+              }
+            }}
+          />
+        </Popover.Dropdown>
+      </Popover>
+    );
+  };
+
+  // Componente de cabeçalho ordenável
+  const SortableHeader = ({ field, children, filterType = 'none', filterPlaceholder = '' }) => (
+    <Group gap="xs" justify="flex-start" style={{ width: '100%' }}>
+      {filterType === 'text' && <TextFilterMenu field={field} placeholder={filterPlaceholder} />}
+      <UnstyledButton onClick={() => handleSort(field)} style={{ flex: 1, textAlign: 'left' }}>
+        <Group gap="xs">
+          <Text fw={500} size="sm">{children}</Text>
+          {sortField === field && (
+            sortDirection === 'asc' ? <IconSortAscending size={12} /> : <IconSortDescending size={12} />
+          )}
+        </Group>
+      </UnstyledButton>
+    </Group>
+  );
+
   // LÓGICA ESPECIAL PARA CONTAS CRIPTO
   const calculateCryptoBalances = () => {
     // Separar posições de BRL + USDT (saldo em caixa) vs outras cryptos (valor investido)
@@ -203,6 +356,33 @@ export function CryptoAccountDetailsPage() {
       totalCryptos: investmentPositions.length
     };
   };
+
+  // Aplicar filtros e ordenação
+  const filteredAndSortedPortfolio = React.useMemo(() => {
+    const cryptoBalances = calculateCryptoBalances();
+    const filtered = applyFilters(cryptoBalances.investmentPositions);
+    
+    return filtered.sort((a, b) => {
+      let aValue = a[sortField];
+      let bValue = b[sortField];
+      
+      // Para campos numéricos
+      if (['quantity', 'average_price_brl', 'current_price_brl', 'market_value_brl', 'unrealized_pnl_brl', 'unrealized_pnl_percentage_brl'].includes(sortField)) {
+        aValue = Number(aValue) || 0;
+        bValue = Number(bValue) || 0;
+      } else {
+        // Para campos de texto
+        aValue = String(aValue || '').toLowerCase();
+        bValue = String(bValue || '').toLowerCase();
+      }
+      
+      if (sortDirection === 'asc') {
+        return aValue > bValue ? 1 : -1;
+      } else {
+        return aValue < bValue ? 1 : -1;
+      }
+    });
+  }, [portfolioSummary, filters, sortField, sortDirection]);
 
   if (loading) {
     return (
@@ -236,6 +416,15 @@ export function CryptoAccountDetailsPage() {
     <Table.Tr key={`${position.asset_id}-${index}`}>
       <Table.Td>
         <Group gap="sm">
+          {position.icon_url ? (
+            <Avatar src={position.icon_url} size="sm" radius="xl" />
+          ) : (
+            <Center style={{ width: 32, height: 32 }}>
+              <Text size="xs" fw={600} color="dimmed">
+                {position.symbol.slice(0, 2)}
+              </Text>
+            </Center>
+          )}
           <Badge color="orange" variant="light" size="sm">
             {position.symbol}
           </Badge>
@@ -294,6 +483,15 @@ export function CryptoAccountDetailsPage() {
       </Table.Td>
       <Table.Td>
         <Group gap="sm">
+          {movement.icon_url ? (
+            <Avatar src={movement.icon_url} size="sm" radius="xl" />
+          ) : (
+            <Center style={{ width: 32, height: 32 }}>
+              <Text size="xs" fw={600} color="dimmed">
+                {movement.symbol.slice(0, 2)}
+              </Text>
+            </Center>
+          )}
           <Badge color="orange" variant="outline" size="sm">
             {movement.symbol}
           </Badge>
@@ -323,15 +521,19 @@ export function CryptoAccountDetailsPage() {
       <Card withBorder>
         <Stack gap="md">
           <Group justify="space-between">
-            <div>
-              <Group gap="sm">
-                <IconWallet size={24} color="orange" />
-                <div>
-                  <Title order={2}>{account.name}</Title>
-                  <Text c="dimmed">{account.institution} • Conta Cripto</Text>
-                </div>
-              </Group>
-            </div>
+            <Group gap="md">
+              {account.icon_url ? (
+                <Avatar src={account.icon_url} size="xl" radius="md" />
+              ) : (
+                <Center style={{ width: 64, height: 64, backgroundColor: '#fff3e0', borderRadius: '8px' }}>
+                  <IconWallet size={32} color="orange" />
+                </Center>
+              )}
+              <div>
+                <Title order={2}>{account.name}</Title>
+                <Text c="dimmed">{account.institution} • Conta Cripto</Text>
+              </div>
+            </Group>
             <Button leftSection={<IconArrowLeft size={16} />} variant="light" component={Link} to="/accounts">
               Voltar
             </Button>
@@ -410,40 +612,185 @@ export function CryptoAccountDetailsPage() {
           <Title order={3}>Portfólio de Criptomoedas</Title>
           <Text c="dimmed">Posições consolidadas de tokens e criptomoedas</Text>
         </div>
-        <Button leftSection={<IconRefresh size={16} />} variant="light" onClick={handleRefresh}>
-          Atualizar Preços
+        <Button 
+          leftSection={<IconRefresh size={16} />} 
+          variant="light" 
+          color="green"
+          onClick={updateCryptoPrices}
+          loading={updatingPrices}
+        >
+          {updatingPrices ? 'Atualizando...' : 'Atualizar Preços'}
         </Button>
       </Group>
 
-      <Table striped highlightOnHover>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Criptomoeda</Table.Th>
-            <Table.Th ta="right">Quantidade</Table.Th>
-            <Table.Th ta="right">Preço Médio</Table.Th>
-            <Table.Th ta="right">Valor de Mercado</Table.Th>
-            <Table.Th ta="right">% do Portfólio</Table.Th>
-            <Table.Th ta="center">P&L Não Realizado</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {portfolioLoading ? (
-            <Table.Tr>
-              <Table.Td colSpan={6} style={{ textAlign: 'center' }}>
-                <Loader size="sm" />
-              </Table.Td>
-            </Table.Tr>
-          ) : portfolioRows.length > 0 ? (
-            portfolioRows
-          ) : (
-            <Table.Tr>
-              <Table.Td colSpan={6} style={{ textAlign: 'center' }}>
-                Nenhuma criptomoeda encontrada nesta conta
-              </Table.Td>
-            </Table.Tr>
-          )}
-        </Table.Tbody>
-      </Table>
+      <Card withBorder>
+        <ScrollArea style={{ height: 'calc(100vh - 500px)', minHeight: '400px' }}>
+          <Table striped highlightOnHover stickyHeader>
+            <Table.Thead style={{ position: 'sticky', top: 0, zIndex: 1, backgroundColor: 'white' }}>
+              <Table.Tr>
+                <Table.Th>
+                  <SortableHeader 
+                    field="name" 
+                    filterType="text" 
+                    filterPlaceholder="Filtrar cripto..."
+                  >
+                    Criptomoeda
+                  </SortableHeader>
+                </Table.Th>
+                <Table.Th ta="right">
+                  <SortableHeader field="quantity">
+                    <div style={{ textAlign: 'right', width: '100%' }}>Quantidade</div>
+                  </SortableHeader>
+                </Table.Th>
+                <Table.Th ta="right">
+                  <SortableHeader field="average_price_brl">
+                    <div style={{ textAlign: 'right', width: '100%' }}>Preço Médio</div>
+                  </SortableHeader>
+                </Table.Th>
+                <Table.Th ta="right">
+                  <SortableHeader field="market_value_brl">
+                    <div style={{ textAlign: 'right', width: '100%' }}>Valor de Mercado</div>
+                  </SortableHeader>
+                </Table.Th>
+                <Table.Th ta="right">
+                  <div style={{ textAlign: 'right', width: '100%' }}>% do Portfólio</div>
+                </Table.Th>
+                <Table.Th ta="right">
+                  <SortableHeader field="unrealized_pnl_brl">
+                    <div style={{ textAlign: 'right', width: '100%' }}>P&L Não Realizado</div>
+                  </SortableHeader>
+                </Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {portfolioLoading ? (
+                <Table.Tr>
+                  <Table.Td colSpan={6} style={{ textAlign: 'center' }}>
+                    <Loader size="sm" />
+                  </Table.Td>
+                </Table.Tr>
+              ) : filteredAndSortedPortfolio.length > 0 ? (
+                filteredAndSortedPortfolio.map((position, index) => (
+                  <Table.Tr key={`${position.asset_id}-${index}`}>
+                    <Table.Td>
+                      <Group gap="sm">
+                        {position.icon_url ? (
+                          <Avatar src={position.icon_url} size="sm" radius="xl" />
+                        ) : (
+                          <Center style={{ width: 32, height: 32 }}>
+                            <Text size="xs" fw={600} color="dimmed">
+                              {position.symbol.slice(0, 2)}
+                            </Text>
+                          </Center>
+                        )}
+                        <Badge color="orange" variant="light" size="sm">
+                          {position.symbol}
+                        </Badge>
+                        <Text size="sm">{position.name}</Text>
+                      </Group>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text ta="right">{Number(position.quantity || 0).toLocaleString('pt-BR', { minimumFractionDigits: 8 })}</Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text ta="right">{formatCurrency(position.average_price_brl)}</Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Stack gap="xs">
+                        <Text ta="right" fw={500}>
+                          {formatCurrency(position.market_value_brl)}
+                        </Text>
+                        {position.current_price_brl && (
+                          <Text size="xs" c="dimmed" ta="right">
+                            {formatCurrency(position.current_price_brl)} / unidade
+                          </Text>
+                        )}
+                      </Stack>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text ta="right" fw={500}>
+                        {calculatePortfolioPercentage(position.market_value_brl).toFixed(2)}%
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Group gap="xs" justify="center">
+                        <Text size="xs" c={position.unrealized_pnl_brl >= 0 ? 'green' : 'red'}>
+                          {position.unrealized_pnl_brl ? (
+                            <>
+                              {position.unrealized_pnl_brl >= 0 ? '+' : ''}{formatCurrency(position.unrealized_pnl_brl)}
+                              ({position.unrealized_pnl_percentage_brl >= 0 ? '+' : ''}{position.unrealized_pnl_percentage_brl?.toFixed(2) || 0}%)
+                            </>
+                          ) : (
+                            <Text size="xs" c="dimmed">N/A</Text>
+                          )}
+                        </Text>
+                      </Group>
+                    </Table.Td>
+                  </Table.Tr>
+                ))
+              ) : (
+                <Table.Tr>
+                  <Table.Td colSpan={6} style={{ textAlign: 'center' }}>
+                    Nenhuma criptomoeda encontrada nesta conta
+                  </Table.Td>
+                </Table.Tr>
+              )}
+            </Table.Tbody>
+            
+            {/* Rodapé com Totalizadores */}
+            <Table.Tfoot style={{ 
+              position: 'sticky', 
+              bottom: 0, 
+              zIndex: 1,
+              backgroundColor: 'black'
+            }}>
+              <Table.Tr style={{ 
+                backgroundColor: 'black', 
+                borderTop: '2px solid black' 
+              }}>
+                <Table.Td>
+                  <Text size="sm" fw={600}>
+                    {filteredAndSortedPortfolio.length} criptos
+                  </Text>
+                </Table.Td>
+                <Table.Td></Table.Td>
+                <Table.Td></Table.Td>
+                <Table.Td ta="right">
+                  <Text size="sm" fw={600}>
+                    {formatCurrency(
+                      filteredAndSortedPortfolio.reduce((sum, pos) => sum + (pos.market_value_brl || 0), 0)
+                    )}
+                  </Text>
+                </Table.Td>
+                <Table.Td></Table.Td>
+                <Table.Td ta="center">
+                  <Text size="sm" fw={600} c={
+                    filteredAndSortedPortfolio.reduce((sum, pos) => sum + (pos.unrealized_pnl_brl || 0), 0) >= 0 
+                      ? 'green' : 'red'
+                  }>
+                    {formatCurrency(
+                      filteredAndSortedPortfolio.reduce((sum, pos) => sum + (pos.unrealized_pnl_brl || 0), 0)
+                    )}
+                  </Text>
+                </Table.Td>
+              </Table.Tr>
+            </Table.Tfoot>
+          </Table>
+        </ScrollArea>
+        
+        {/* Botão Limpar Filtros */}
+        {filters.name && (
+          <Group justify="center" mt="md">
+            <Button 
+              variant="light" 
+              size="sm"
+              onClick={clearFilters}
+            >
+              Limpar Filtros
+            </Button>
+          </Group>
+        )}
+      </Card>
 
       {movements.length > 0 && (
         <>

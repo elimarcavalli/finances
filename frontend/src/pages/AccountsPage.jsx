@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Title, 
   Button, 
-  Table, 
   Modal, 
   TextInput, 
   Select, 
@@ -13,7 +12,11 @@ import {
   Alert,
   Text,
   Badge,
-  Anchor
+  Anchor,
+  Avatar,
+  Center,
+  Card,
+  ScrollArea
 } from '@mantine/core';
 import { Link } from 'react-router-dom';
 import { useForm } from '@mantine/form';
@@ -27,6 +30,7 @@ import {
 } from '@tabler/icons-react';
 import api from '../api';
 import { notifications } from '@mantine/notifications';
+import { AdvancedTable } from '../components/AdvancedTable';
 
 export function AccountsPage() {
   const [accounts, setAccounts] = useState([]);
@@ -35,6 +39,8 @@ export function AccountsPage() {
   const [editingAccount, setEditingAccount] = useState(null);
   const [error, setError] = useState('');
   const [syncingAccounts, setSyncingAccounts] = useState(new Set());
+  const [imagePreviewUrl, setImagePreviewUrl] = useState('');
+  const [imageError, setImageError] = useState(false);
 
   const form = useForm({
     initialValues: {
@@ -44,7 +50,8 @@ export function AccountsPage() {
       balance: 0.00,
       credit_limit: 0.00,
       invoice_due_day: null,
-      public_address: ''
+      public_address: '',
+      icon_url: ''
     },
     validate: {
       name: (value) => (value.length < 2 ? 'Nome deve ter pelo menos 2 caracteres' : null),
@@ -68,7 +75,8 @@ export function AccountsPage() {
     setError('');
     try {
       const response = await api.get('/accounts');
-      setAccounts(response.data.accounts || []);
+      const accountsData = response.data.accounts || [];
+      setAccounts(accountsData);
     } catch (err) {
       setError('Erro ao carregar contas');
       console.error('Error loading accounts:', err);
@@ -84,6 +92,8 @@ export function AccountsPage() {
   const openCreateModal = () => {
     setEditingAccount(null);
     form.reset();
+    setImagePreviewUrl('');
+    setImageError(false);
     setModalOpened(true);
   };
 
@@ -92,8 +102,11 @@ export function AccountsPage() {
     // Para edição, garantir que o saldo atual seja exibido no formulário
     form.setValues({
       ...account,
-      balance: account.balance || 0.00  // Saldo atual calculado dinamicamente
+      balance: account.balance || 0.00,  // Saldo atual calculado dinamicamente
+      icon_url: account.icon_url || ''
     });
+    setImagePreviewUrl(account.icon_url || '');
+    setImageError(false);
     setModalOpened(true);
   };
 
@@ -233,126 +246,195 @@ export function AccountsPage() {
     return balance >= 0 ? 'green' : 'red';
   };
 
-  return (
-    <Stack gap="md">
-      <Title order={2}>Gerenciador de Contas</Title>
-      
-      {error && (
-        <Alert icon={<IconAlertCircle size="1rem" />} color="red">
-          {error}
-        </Alert>
-      )}
-
-      <Group justify="flex-start">
-        <Button 
-          leftSection={<IconPlus size={14} />}
-          onClick={openCreateModal}
-          loading={loading}
-        >
-          Nova Conta
-        </Button>
-      </Group>
-
-      <Table striped highlightOnHover>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Nome</Table.Th>
-            <Table.Th>Tipo</Table.Th>
-            <Table.Th>Instituição</Table.Th>
-            <Table.Th>Saldo</Table.Th>
-            <Table.Th width={120}>Ações</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {accounts.length === 0 ? (
-            <Table.Tr>
-              <Table.Td colSpan={5} style={{ textAlign: 'center', padding: '2rem' }}>
-                <Text c="dimmed">
-                  {loading ? 'Carregando contas...' : 'Nenhuma conta encontrada'}
-                </Text>
-              </Table.Td>
-            </Table.Tr>
+  // Configuração das colunas para AdvancedTable
+  const columns = [
+    {
+      accessor: 'name',
+      header: 'Nome',
+      sortable: true,
+      filterable: true,
+      filterType: 'text',
+      filterPlaceholder: 'Filtrar por nome...',
+      render: (row) => (
+        <Group gap="sm">
+          {row.icon_url ? (
+            <Avatar src={row.icon_url} size="sm" radius="xl" />
           ) : (
-            accounts.map((account) => (
-              <Table.Tr key={account.id}>
-                <Table.Td>
-                  <Group gap="sm">
-                    <IconCreditCard size={16} />
-                    <Anchor 
-                      component={Link} 
-                      to={
-                        (account.type === 'CARTEIRA_CRIPTO' || account.type === 'CORRETORA_CRIPTO') 
-                          ? `/contas/cripto/${account.id}` 
-                          : `/contas/${account.id}`
-                      } 
-                      fw={500}
-                    >
-                      {account.name}
-                    </Anchor>
-                  </Group>
-                </Table.Td>
-                <Table.Td>
-                  <Badge variant="light">
-                    {getAccountTypeLabel(account.type)}
-                  </Badge>
-                </Table.Td>
-                <Table.Td>{account.institution || '-'}</Table.Td>
-                <Table.Td>
-                  <Text c={getBalanceColor(account.balance, account.type)} fw={500}>
-                    R$ {Number(account.balance).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                  </Text>
-                </Table.Td>
-                <Table.Td>
-                  <Group gap="xs">
-                    {(account.type === 'CARTEIRA_CRIPTO' || account.type === 'CORRETORA_CRIPTO') && (
-                      <ActionIcon
-                        variant="light"
-                        color="green"
-                        onClick={() => handleSyncWallet(account.id, account.name)}
-                        loading={syncingAccounts.has(account.id)}
-                        disabled={loading || syncingAccounts.has(account.id)}
-                        title="Sincronizar com blockchain"
-                      >
-                        <IconRefresh size={14} />
-                      </ActionIcon>
-                    )}
-                    <ActionIcon
-                      variant="light"
-                      color="blue"
-                      onClick={() => openEditModal(account)}
-                      disabled={loading}
-                    >
-                      <IconPencil size={14} />
-                    </ActionIcon>
-                    <ActionIcon
-                      variant="light"
-                      color="red"
-                      onClick={() => handleDelete(account.id)}
-                      disabled={loading}
-                    >
-                      <IconTrash size={14} />
-                    </ActionIcon>
-                  </Group>
-                </Table.Td>
-              </Table.Tr>
-            ))
+            <Center style={{ width: 32, height: 32 }}>
+              <IconCreditCard size={16} />
+            </Center>
           )}
-        </Table.Tbody>
-      </Table>
+          <Anchor 
+            component={Link} 
+            to={
+              (row.type === 'CARTEIRA_CRIPTO' || row.type === 'CORRETORA_CRIPTO') 
+                ? `/contas/cripto/${row.id}` 
+                : `/contas/${row.id}`
+            } 
+            fw={500}
+          >
+            {row.name}
+          </Anchor>
+        </Group>
+      )
+    },
+    {
+      accessor: 'type',
+      header: 'Tipo',
+      sortable: true,
+      filterable: true,
+      filterType: 'select',
+      multiSelect: true,
+      filterOptions: accountTypes,
+      render: (row) => (
+        <Badge variant="light">
+          {getAccountTypeLabel(row.type)}
+        </Badge>
+      )
+    },
+    {
+      accessor: 'institution',
+      header: 'Instituição',
+      sortable: true,
+      filterable: true,
+      filterType: 'text',
+      filterPlaceholder: 'Filtrar por instituição...',
+      render: (row) => <Text size="sm">{row.institution || '-'}</Text>
+    },
+    {
+      accessor: 'balance',
+      header: 'Saldo',
+      sortable: true,
+      filterable: true,
+      filterType: 'select',
+      filterOptions: [
+        { value: '', label: 'Todas' },
+        { value: 'positive', label: 'Positivas' },
+        { value: 'negative', label: 'Negativas' },
+        { value: 'zero', label: 'Zeradas' }
+      ],
+      align: 'right',
+      render: (row) => (
+        <Text c={getBalanceColor(row.balance, row.type)} fw={500} size="sm">
+          R$ {Number(row.balance).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+        </Text>
+      )
+    },
+    {
+      accessor: 'actions',
+      header: 'Ações',
+      sortable: false,
+      filterable: false,
+      align: 'center',
+      render: (row) => (
+        <Group gap="xs">
+          {(row.type === 'CARTEIRA_CRIPTO' || row.type === 'CORRETORA_CRIPTO') && (
+            <ActionIcon
+              variant="light"
+              color="green"
+              onClick={() => handleSyncWallet(row.id, row.name)}
+              loading={syncingAccounts.has(row.id)}
+              disabled={loading || syncingAccounts.has(row.id)}
+              title="Sincronizar com blockchain"
+            >
+              <IconRefresh size={14} />
+            </ActionIcon>
+          )}
+          <ActionIcon
+            variant="light"
+            color="blue"
+            onClick={() => openEditModal(row)}
+            disabled={loading}
+          >
+            <IconPencil size={14} />
+          </ActionIcon>
+          <ActionIcon
+            variant="light"
+            color="red"
+            onClick={() => handleDelete(row.id)}
+            disabled={loading}
+          >
+            <IconTrash size={14} />
+          </ActionIcon>
+        </Group>
+      )
+    }
+  ];
+
+
+  // Cálculos para o rodapé
+  const footerCalculations = {
+    balance: (filteredData) => {
+      const total = filteredData.reduce((sum, account) => sum + (Number(account.balance) || 0), 0);
+      return `R$ ${total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+    }
+  };
+
+  return (
+    <div className="page-with-advanced-table">
+      <div className="page-header">
+        <Title order={2} mb="md">Gerenciador de Contas</Title>
+        
+        {error && (
+          <Alert icon={<IconAlertCircle size="1rem" />} color="red" mb="md">
+            {error}
+          </Alert>
+        )}
+
+        <Group justify="space-between">
+          <Button 
+            leftSection={<IconPlus size={14} />}
+            onClick={openCreateModal}
+            loading={loading}
+          >
+            Nova Conta
+          </Button>
+        </Group>
+      </div>
+
+      <div className="page-table-container">
+        <AdvancedTable
+          data={accounts}
+          columns={columns}
+          footerCalculations={footerCalculations}
+          emptyStateText={loading ? "Carregando contas..." : "Nenhuma conta encontrada"}
+          emptyStateDescription="Adicione sua primeira conta para começar"
+        />
+      </div>
 
       <Modal
         opened={modalOpened}
-        onClose={() => setModalOpened(false)}
+        onClose={() => {
+          setModalOpened(false);
+          setImagePreviewUrl('');
+          setImageError(false);
+        }}
         title={editingAccount ? 'Editar Conta' : 'Nova Conta'}
         size="lg"
       >
         <form onSubmit={form.onSubmit(handleSubmit)}>
           <Stack gap="md">
-            <TextInput
-              label="Nome da Conta"
-              placeholder="Ex: Banco do Brasil - Conta Corrente"
-              {...form.getInputProps('name')}
-            />
+            <Group align="flex-end" gap="md">
+              {(imagePreviewUrl || form.values.icon_url) && !imageError && (
+                <Avatar 
+                  src={imagePreviewUrl || form.values.icon_url} 
+                  size="lg" 
+                  radius="md"
+                  onError={() => setImageError(true)}
+                />
+              )}
+              {(imagePreviewUrl || form.values.icon_url) && imageError && (
+                <Center style={{ width: 48, height: 48, border: '1px dashed #ccc', borderRadius: '8px' }}>
+                  <Text size="xs" c="dimmed">Erro</Text>
+                </Center>
+              )}
+              <TextInput
+                label="Nome da Conta"
+                placeholder="Ex: Banco do Brasil - Conta Corrente"
+                {...form.getInputProps('name')}
+                style={{ flex: 1 }}
+              />
+            </Group>
 
             <Select
               label="Tipo de Conta"
@@ -364,6 +446,19 @@ export function AccountsPage() {
               label="Instituição"
               placeholder="Ex: Banco do Brasil, Nubank, Binance"
               {...form.getInputProps('institution')}
+            />
+
+            <TextInput
+              label="URL do Ícone (opcional)"
+              placeholder="Ex: https://example.com/logo.png"
+              description="URL da imagem da instituição - Preview será atualizado automaticamente"
+              {...form.getInputProps('icon_url')}
+              onChange={(event) => {
+                const url = event.currentTarget.value;
+                form.setFieldValue('icon_url', url);
+                setImagePreviewUrl(url);
+                setImageError(false);
+              }}
             />
 
             <NumberInput
@@ -409,7 +504,11 @@ export function AccountsPage() {
             <Group justify="flex-end" mt="md">
               <Button 
                 variant="light" 
-                onClick={() => setModalOpened(false)}
+                onClick={() => {
+                  setModalOpened(false);
+                  setImagePreviewUrl('');
+                  setImageError(false);
+                }}
                 disabled={loading}
               >
                 Cancelar
@@ -424,6 +523,6 @@ export function AccountsPage() {
           </Stack>
         </form>
       </Modal>
-    </Stack>
+    </div>
   );
 }

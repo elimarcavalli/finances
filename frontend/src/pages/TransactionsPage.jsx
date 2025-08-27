@@ -32,6 +32,7 @@ import {
   IconArrowDownLeft,
   IconArrowRight
 } from '@tabler/icons-react';
+import { notifications } from '@mantine/notifications';
 import api from '../api';
 import { AccountIcon } from '../components/AccountIcon';
 
@@ -121,7 +122,10 @@ export function TransactionsPage() {
     setEditingTransaction(transaction);
     form.setValues({
       ...transaction,
-      transaction_date: new Date(transaction.transaction_date)
+      transaction_date: new Date(transaction.transaction_date),
+      // Converter IDs para string para os componentes Select
+      from_account_id: transaction.from_account_id ? transaction.from_account_id.toString() : '',
+      to_account_id: transaction.to_account_id ? transaction.to_account_id.toString() : ''
     });
     setTransactionType(transaction.type);
     setModalOpened(true);
@@ -153,7 +157,9 @@ export function TransactionsPage() {
       // Formatar data e converter IDs para números para o backend
       const formattedData = {
         ...values,
-        transaction_date: values.transaction_date.toISOString().split('T')[0],
+        transaction_date: values.transaction_date instanceof Date 
+          ? values.transaction_date.toISOString().split('T')[0] 
+          : values.transaction_date, // Se já é string, mantém como está
         from_account_id: values.from_account_id ? parseInt(values.from_account_id) : null,
         to_account_id: values.to_account_id ? parseInt(values.to_account_id) : null
       };
@@ -182,19 +188,39 @@ export function TransactionsPage() {
   };
 
   const handleDelete = async (transactionId) => {
-    if (!confirm('Tem certeza que deseja excluir este lançamento?')) return;
+    const confirmMessage = `Tem certeza que deseja excluir este lançamento?
+    
+⚠️ ATENÇÃO: Se este lançamento estiver vinculado a uma obrigação paga, 
+a obrigação será automaticamente revertida para status PENDENTE.`;
+    
+    if (!confirm(confirmMessage)) return;
     
     setLoading(true);
     setError('');
     
     try {
       await api.delete(`/transactions/${transactionId}`);
+      
+      // Notificação de sucesso com informação sobre obrigações
+      notifications.show({
+        title: 'Lançamento Excluído',
+        message: 'Lançamento excluído com sucesso! Se havia obrigações vinculadas, foram revertidas para PENDENTE.',
+        color: 'green',
+        autoClose: 5000
+      });
+      
       await loadTransactions(selectedAccount);
       // Recarregar contas para atualizar saldos
       const response = await api.get('/accounts');
       setRawAccounts(response.data.accounts || []);
     } catch (err) {
-      setError('Erro ao excluir lançamento');
+      setError('Erro ao excluir lançamento e reverter obrigações vinculadas');
+      notifications.show({
+        title: 'Erro ao Excluir',
+        message: 'Não foi possível excluir o lançamento. Verifique se não há dependências.',
+        color: 'red',
+        autoClose: 5000
+      });
       console.error('Error deleting transaction:', err);
     } finally {
       setLoading(false);

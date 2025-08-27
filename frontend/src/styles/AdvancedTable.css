@@ -1,0 +1,92 @@
+/* AdvancedTable - Layout Responsivo Universal */
+
+/* Container principal que ocupa todo espaço disponível */
+.advanced-table-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* Importante para flexbox funcionar corretamente */
+}
+
+/* Cabeçalho de filtros ativos */
+.advanced-table-filters-header {
+  flex-shrink: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+  background-color: var(--mantine-color-body);
+}
+
+/* Área principal da tabela */
+.advanced-table-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* Garante que o flex funcione */
+}
+
+/* ScrollArea da tabela */
+.advanced-table-scroll {
+  flex: 1;
+  min-height: 0; /* Essencial para scroll funcionar */
+}
+
+/* Rodapé fixo */
+.advanced-table-footer {
+  flex-shrink: 0;
+  border-top: 2px solid var(--mantine-color-default-border);
+  background-color: var(--mantine-color-body);
+  padding: 8px 16px;
+}
+
+/* Páginas que usam AdvancedTable */
+.page-with-advanced-table {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+/* Cabeçalho da página */
+.page-header {
+  flex-shrink: 0;
+  margin-bottom: 1rem;
+}
+
+/* Container da tabela nas páginas */
+.page-table-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--mantine-color-body);
+}
+
+/* Para elementos que devem ter altura mínima zero no flexbox */
+.flex-min-height-0 {
+  min-height: 0;
+}
+
+/* Responsividade adicional */
+@media (max-height: 600px) {
+  .advanced-table-container {
+    min-height: 400px;
+  }
+}
+
+@media (max-width: 768px) {
+  .page-with-advanced-table {
+    padding: 0.5rem;
+  }
+  
+  .advanced-table-filters-header {
+    padding: 4px 0;
+  }
+  
+  .advanced-table-footer {
+    padding: 4px 8px;
+  }
+}

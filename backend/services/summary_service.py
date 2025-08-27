@@ -5,11 +5,12 @@ Responsável pelos cálculos de BI do dashboard financeiro
 
 from typing import Dict, List, Any, Optional
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, date
 from services.database_service import DatabaseService
 from services.price_service import PriceService
 from services.portfolio_service import PortfolioService
 from services.account_service import AccountService
+from services.obligation_service import ObligationService
 import mysql.connector
 
 
@@ -19,6 +20,16 @@ class SummaryService:
         self.price_service = PriceService()
         self.portfolio_service = PortfolioService(database_service, self.price_service)
         self.account_service = AccountService(database_service)
+        # Importação circular resolvida: instanciar apenas quando necessário
+        self.obligation_service = None
+
+    def _get_obligation_service(self):
+        """Lazy loading do obligation_service para evitar importação circular"""
+        if self.obligation_service is None:
+            from services.transaction_service import TransactionService
+            transaction_service = TransactionService(self.db)
+            self.obligation_service = ObligationService(self.db, transaction_service)
+        return self.obligation_service
 
     def get_dashboard_summary(self, user_id: int) -> Dict[str, Any]:
         """
@@ -52,9 +63,19 @@ class SummaryService:
             # 8. Calcular cryptoPortfolio (Passo 24)
             crypto_portfolio = self._calculate_crypto_portfolio(cursor, user_id)
             
-            # 9. Placeholders para funcionalidades futuras
-            upcoming_receivables = {"total": 0.00, "count": 0}
-            upcoming_payables = {"total": 0.00, "count": 0}
+            # 9. Calcular obrigações + recurring rules (obligation_service já inclui tudo)
+            obligations_service = self._get_obligation_service()
+            obligations_summary = obligations_service.get_obligations_summary_30d(user_id)
+            
+            # CORREÇÃO: obligation_service já inclui recurring rules, não somar novamente
+            upcoming_receivables = {
+                "total": obligations_summary.get('receivable_next_30d', 0.0),
+                "count": self._count_upcoming_obligations(cursor, user_id, 'RECEIVABLE') + self._count_active_recurring_rules(cursor, user_id, 'RECEIVABLE')
+            }
+            upcoming_payables = {
+                "total": obligations_summary.get('payable_next_30d', 0.0), 
+                "count": self._count_upcoming_obligations(cursor, user_id, 'PAYABLE') + self._count_active_recurring_rules(cursor, user_id, 'PAYABLE')
+            }
             
             return {
                 "netWorth": float(net_worth),
@@ -267,6 +288,67 @@ class SummaryService:
         finally:
             cursor.close()
 
+    def get_cash_flow_chart_data_by_period(self, user_id: int, start_date: date, end_date: date, period: str = 'monthly') -> List[Dict[str, Any]]:
+        """
+        Calcula dados do gráfico de fluxo de caixa por período específico
+        """
+        cursor = self.db.connection.cursor(dictionary=True)
+        
+        try:
+            # Determinar formato de data
+            if period == "daily":
+                date_format = "%Y-%m-%d"
+            elif period == "weekly":
+                date_format = "%Y-%u"  # Year-Week
+            elif period == "monthly":
+                date_format = "%Y-%m"
+            else:
+                date_format = "%Y-%m"
+            
+            # Query com período específico
+            query = f"""
+                SELECT 
+                    DATE_FORMAT(t.transaction_date, %s) as period_key,
+                    SUM(IF(t.type = 'RECEITA', t.amount, 0)) as income,
+                    SUM(IF(t.type = 'DESPESA', t.amount, 0)) as expense
+                FROM transactions t
+                WHERE t.user_id = %s 
+                AND t.transaction_date BETWEEN %s AND %s
+                AND t.type IN ('RECEITA', 'DESPESA')
+                AND t.status = 'EFETIVADO'
+                GROUP BY period_key
+                ORDER BY period_key
+            """
+            
+            cursor.execute(query, (date_format, user_id, start_date, end_date))
+            results = cursor.fetchall()
+            
+            # Formatar dados para o gráfico
+            chart_data = []
+            for result in results:
+                # Converter format de volta para algo mais legível
+                period_key = result['period_key']
+                if period == "monthly":
+                    # Converter "2025-08" para "Ago/2025"
+                    year, month = period_key.split('-')
+                    month_names = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 
+                                 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+                    month_display = f"{month_names[int(month)]}/{year}"
+                else:
+                    month_display = period_key
+                
+                chart_data.append({
+                    "month": month_display,
+                    "period_key": period_key,
+                    "income": float(result['income'] or 0),
+                    "expense": float(result['expense'] or 0)
+                })
+            
+            return chart_data
+            
+        finally:
+            cursor.close()
+
     def _calculate_crypto_portfolio(self, cursor, user_id: int) -> Dict[str, Any]:
         """
         Calcula o portfólio cripto usando o novo portfolio_service
@@ -398,3 +480,85 @@ class SummaryService:
             raise Exception(f"Erro ao buscar histórico de patrimônio: {err}")
         finally:
             cursor.close()
+
+    def _count_upcoming_obligations(self, cursor, user_id: int, obligation_type: str) -> int:
+        """
+        Conta quantas obrigações existem nos próximos 30 dias por tipo
+        """
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) as count
+                FROM financial_obligations 
+                WHERE user_id = %s 
+                AND type = %s
+                AND status IN ('PENDING', 'OVERDUE')
+                AND YEAR(due_date) = YEAR(CURDATE()) 
+                AND MONTH(due_date) = MONTH(CURDATE())
+            """, (user_id, obligation_type))
+            
+            result = cursor.fetchone()
+            return result['count'] if result else 0
+            
+        except mysql.connector.Error as err:
+            print(f"Error counting upcoming obligations: {err}")
+            return 0
+
+    def _calculate_pending_recurring_rules(self, cursor, user_id: int, rule_type: str) -> float:
+        """
+        Calcula o valor total das recurring rules ativas que ainda não foram liquidadas no mês atual
+        Lógica: Se uma recurring rule não foi liquidada ainda este mês, ela deve aparecer no fluxo de caixa
+        """
+        try:
+            # Buscar recurring rules ativas que ainda não foram liquidadas no mês atual
+            cursor.execute("""
+                SELECT rr.id, rr.amount
+                FROM recurring_rules rr
+                WHERE rr.user_id = %s 
+                AND rr.type = %s
+                AND rr.is_active = 1
+                AND NOT EXISTS (
+                    SELECT 1 
+                    FROM financial_obligations fo
+                    WHERE fo.recurring_rule_id = rr.id 
+                    AND YEAR(fo.due_date) = YEAR(CURDATE())
+                    AND MONTH(fo.due_date) = MONTH(CURDATE())
+                    AND fo.status = 'PAID'
+                )
+            """, (user_id, rule_type))
+            
+            results = cursor.fetchall()
+            total = sum(float(result['amount']) for result in results if result['amount'])
+            
+            return total
+            
+        except mysql.connector.Error as err:
+            print(f"Error calculating pending recurring rules: {err}")
+            return 0.0
+
+    def _count_active_recurring_rules(self, cursor, user_id: int, rule_type: str) -> int:
+        """
+        Conta quantas recurring rules ativas ainda não foram liquidadas no mês atual
+        """
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) as count
+                FROM recurring_rules rr
+                WHERE rr.user_id = %s 
+                AND rr.type = %s
+                AND rr.is_active = 1
+                AND NOT EXISTS (
+                    SELECT 1 
+                    FROM financial_obligations fo
+                    WHERE fo.recurring_rule_id = rr.id 
+                    AND YEAR(fo.due_date) = YEAR(CURDATE())
+                    AND MONTH(fo.due_date) = MONTH(CURDATE())
+                    AND fo.status = 'PAID'
+                )
+            """, (user_id, rule_type))
+            
+            result = cursor.fetchone()
+            return result['count'] if result else 0
+            
+        except mysql.connector.Error as err:
+            print(f"Error counting active recurring rules: {err}")
+            return 0

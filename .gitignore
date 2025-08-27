@@ -84,11 +84,9 @@ test_data/
 smart-contracts/artifacts/
 smart-contracts/cache/
 smart-contracts/typechain-types/
-test_*.json
+tests/
+feito/
 strategy_*.json
-simple_test.py
-test_backend.py
-debug_dashboard.py
 *.png
 *.jpg
 *.jpeg

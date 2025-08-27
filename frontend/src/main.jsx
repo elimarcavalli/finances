@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
+import { DatesProvider } from '@mantine/dates';
 import { HashRouter } from 'react-router-dom';
 import { WagmiProvider } from 'wagmi';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -11,6 +12,8 @@ import { polygon } from '@reown/appkit/networks';
 import App from './App';
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
+import '@mantine/dates/styles.css';
+import 'dayjs/locale/pt-br';
 
 const projectId = '2f05ae7f1116030fde2d36508f472bfb';
 
@@ -58,8 +61,10 @@ ReactDOM.createRoot(document.getElementById('root')).render(
               }
             }}
           >
-            <Notifications />
-            <App />
+            <DatesProvider settings={{ locale: 'pt-br', firstDayOfWeek: 0, weekendDays: [0, 6] }}>
+              <Notifications />
+              <App />
+            </DatesProvider>
           </MantineProvider>
         </HashRouter>
       </QueryClientProvider>

@@ -146,7 +146,7 @@ class ObligationService:
             fields = []
             values = []
             
-            allowed_fields = ['description', 'amount', 'due_date', 'category', 'entity_name', 'notes', 'status']
+            allowed_fields = ['description', 'amount', 'due_date', 'category', 'entity_name', 'notes', 'status', 'linked_transaction_id', 'recurring_rule_id']
             for field in allowed_fields:
                 if field in obligation_data:
                     fields.append(f"{field} = %s")
@@ -292,18 +292,79 @@ class ObligationService:
             # 5. Commit da transação ACID
             self.db_service.connection.commit()
             
-            # Retornar dados da liquidação
+            # Retornar dados da liquidação no formato esperado pelo SettlementResponse
             return {
-                'obligation': self.get_obligation_by_id(user_id, obligation_id),
-                'transaction': new_transaction,
-                'settlement_date': settlement_date.isoformat(),
-                'account_used': account['name']
+                'message': f'Obrigação liquidada com sucesso usando conta: {account["name"]}',
+                'obligation_id': obligation_id,
+                'transaction_id': new_transaction['id']
             }
             
         except Exception as e:
             # Rollback em caso de erro
             self.db_service.connection.rollback()
             raise Exception(f"Error settling obligation: {str(e)}")
+        finally:
+            cursor.close()
+            self.db_service.connection.autocommit = True
+    
+    def cancel_settlement(self, user_id: int, obligation_id: int) -> dict:
+        """
+        FUNÇÃO CRÍTICA: Cancela a liquidação de uma obrigação PAID
+        Remove a transação vinculada e reverte o status para PENDING
+        Tudo dentro de transação ACID para garantir consistência
+        """
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        
+        try:
+            # Iniciar transação ACID
+            self.db_service.connection.autocommit = False
+            
+            # 1. Buscar dados da obrigação e validar
+            cursor.execute("""
+                SELECT * FROM financial_obligations 
+                WHERE id = %s AND user_id = %s AND status = 'PAID'
+            """, (obligation_id, user_id))
+            
+            obligation = cursor.fetchone()
+            if not obligation:
+                raise ValueError("Obligation not found, not owned by user, or not in PAID status")
+            
+            # 2. Verificar se há transação vinculada para deletar
+            linked_transaction_id = obligation.get('linked_transaction_id')
+            if not linked_transaction_id:
+                raise ValueError("No linked transaction found to cancel")
+            
+            # 3. Deletar a transação vinculada usando transaction_service
+            try:
+                delete_success = self.transaction_service.delete_transaction(user_id, linked_transaction_id)
+                if not delete_success:
+                    raise ValueError("Failed to delete linked transaction")
+            except Exception as e:
+                raise ValueError(f"Error deleting linked transaction: {str(e)}")
+            
+            # 4. Reverter obrigação para status PENDING
+            cursor.execute("""
+                UPDATE financial_obligations 
+                SET status = 'PENDING', 
+                    linked_transaction_id = NULL,
+                    updated_at = NOW()
+                WHERE id = %s AND user_id = %s
+            """, (obligation_id, user_id))
+            
+            # 5. Commit da transação ACID
+            self.db_service.connection.commit()
+            
+            # Retornar dados da obrigação atualizada
+            return {
+                'obligation': self.get_obligation_by_id(user_id, obligation_id),
+                'message': 'Settlement cancelled successfully',
+                'cancelled_transaction_id': linked_transaction_id
+            }
+            
+        except Exception as e:
+            # Rollback em caso de erro
+            self.db_service.connection.rollback()
+            raise Exception(f"Error cancelling settlement: {str(e)}")
         finally:
             cursor.close()
             self.db_service.connection.autocommit = True
@@ -341,6 +402,10 @@ class ObligationService:
                 rule_data.get('end_date'),
                 rule_data.get('is_active', True)
             )
+            
+            # Debug logging
+            print(f"CREATE_RECURRING_RULE: user_id={user_id}")
+            print(f"CREATE_RECURRING_RULE: values={values}")
             
             cursor.execute(query, values)
             self.db_service.connection.commit()
@@ -394,8 +459,13 @@ class ObligationService:
             
             query += " ORDER BY created_at DESC"
             
+            # Debug logging
+            print(f"GET_RECURRING_RULES: user_id={user_id}, query={query}, params={params}")
+            
             cursor.execute(query, params)
             results = cursor.fetchall()
+            
+            print(f"GET_RECURRING_RULES: found {len(results)} rules")
             
             # Converter Decimal para float
             for result in results:
@@ -418,14 +488,18 @@ class ObligationService:
             fields = []
             values = []
             
-            allowed_fields = ['description', 'amount', 'category', 'entity_name', 'frequency', 'interval_value', 'end_date', 'is_active']
+            allowed_fields = ['description', 'amount', 'category', 'entity_name', 'frequency', 'interval_value', 'start_date', 'end_date', 'is_active']
             for field in allowed_fields:
                 if field in rule_data:
                     fields.append(f"{field} = %s")
-                    values.append(rule_data[field])
+                    # Converter objetos date para string se necessário
+                    value = rule_data[field]
+                    if hasattr(value, 'isoformat'):  # É um objeto date/datetime
+                        value = value.isoformat()
+                    values.append(value)
             
             if not fields:
-                raise ValueError("No valid fields to update")
+                raise ValueError(f"No valid fields to update. Received data: {rule_data}")
             
             values.extend([rule_id, user_id])
             query = f"""
@@ -434,11 +508,26 @@ class ObligationService:
                 WHERE id = %s AND user_id = %s
             """
             
+            # Debug logging
+            print(f"UPDATE_RECURRING_RULE: user_id={user_id}, rule_id={rule_id}")
+            print(f"UPDATE_RECURRING_RULE: fields={fields}")
+            print(f"UPDATE_RECURRING_RULE: values={values}")
+            print(f"UPDATE_RECURRING_RULE: value types={[type(v).__name__ for v in values]}")
+            print(f"UPDATE_RECURRING_RULE: query={query}")
+            
             cursor.execute(query, values)
             self.db_service.connection.commit()
             
+            print(f"UPDATE_RECURRING_RULE: rowcount={cursor.rowcount}")
+            
             if cursor.rowcount == 0:
-                raise ValueError("Recurring rule not found or not owned by user")
+                # Verificar se a regra existe mas não pertence ao usuário
+                cursor.execute("SELECT user_id FROM recurring_rules WHERE id = %s", (rule_id,))
+                existing_rule = cursor.fetchone()
+                if existing_rule:
+                    raise ValueError(f"Recurring rule exists but belongs to user_id {existing_rule['user_id']}, not {user_id}")
+                else:
+                    raise ValueError("Recurring rule not found")
             
             return self.get_recurring_rule_by_id(user_id, rule_id)
             
@@ -470,6 +559,231 @@ class ObligationService:
             raise Exception(f"Database error deleting recurring rule: {err}")
         finally:
             cursor.close()
+    
+    def get_last_liquidation_date(self, user_id: int, rule_id: int) -> dict:
+        """
+        Busca a data da última liquidação de uma recurring rule
+        """
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        try:
+            cursor.execute("""
+                SELECT MAX(t.transaction_date) as last_liquidation_date
+                FROM financial_obligations fo 
+                JOIN transactions t ON t.id = fo.linked_transaction_id
+                WHERE fo.status = 'PAID' 
+                AND fo.recurring_rule_id = %s
+                AND fo.user_id = %s
+            """, (rule_id, user_id))
+            
+            result = cursor.fetchone()
+            last_date = result['last_liquidation_date'] if result else None
+            
+            # Verificar se a última liquidação foi no mês atual
+            is_current_month = False
+            if last_date:
+                from datetime import date
+                today = date.today()
+                is_current_month = (last_date.year == today.year and last_date.month == today.month)
+            
+            return {
+                'last_liquidation_date': last_date.isoformat() if last_date else None,
+                'is_current_month': is_current_month,
+                'can_reverse': is_current_month  # Pode estornar se foi liquidada no mês atual
+            }
+            
+        except mysql.connector.Error as err:
+            raise Exception(f"Database error fetching last liquidation: {err}")
+        finally:
+            cursor.close()
+    
+    def reverse_current_month_liquidation(self, user_id: int, rule_id: int) -> dict:
+        """
+        Estorna a liquidação de uma recurring rule do mês atual
+        Remove APENAS as financial_obligations e transactions do mês atual relacionadas à rule
+        """
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        try:
+            # Iniciar transação ACID
+            self.db_service.connection.autocommit = False
+            
+            # 1. Buscar obligations do mês atual para esta recurring rule
+            cursor.execute("""
+                SELECT fo.id, fo.linked_transaction_id, t.transaction_date
+                FROM financial_obligations fo
+                JOIN transactions t ON t.id = fo.linked_transaction_id
+                WHERE fo.recurring_rule_id = %s 
+                AND fo.user_id = %s
+                AND fo.status = 'PAID'
+                AND YEAR(t.transaction_date) = YEAR(CURDATE())
+                AND MONTH(t.transaction_date) = MONTH(CURDATE())
+            """, (rule_id, user_id))
+            
+            current_month_obligations = cursor.fetchall()
+            
+            if not current_month_obligations:
+                raise ValueError("Nenhuma liquidação encontrada no mês atual para esta recurring rule")
+            
+            reversed_count = 0
+            
+            # 2. Para cada obligation do mês atual, deletar a transaction e a obligation
+            for obligation in current_month_obligations:
+                # Deletar a transaction
+                cursor.execute("""
+                    DELETE FROM transactions 
+                    WHERE id = %s AND user_id = %s
+                """, (obligation['linked_transaction_id'], user_id))
+                
+                # Deletar a financial_obligation
+                cursor.execute("""
+                    DELETE FROM financial_obligations 
+                    WHERE id = %s AND user_id = %s
+                """, (obligation['id'], user_id))
+                
+                reversed_count += 1
+            
+            # 3. Commit da transação ACID
+            self.db_service.connection.commit()
+            
+            return {
+                'message': f'Estorno realizado com sucesso. {reversed_count} liquidação(ões) do mês atual removida(s).',
+                'rule_id': rule_id,
+                'reversed_count': reversed_count
+            }
+            
+        except Exception as e:
+            # Rollback em caso de erro
+            self.db_service.connection.rollback()
+            raise Exception(f"Error reversing current month liquidation: {str(e)}")
+        finally:
+            cursor.close()
+            self.db_service.connection.autocommit = True
+    
+    def liquidate_recurring_rule(self, user_id: int, rule_id: int, account_id: int, liquidation_date: date = None) -> dict:
+        """
+        FUNÇÃO CRÍTICA: Liquida uma recurring rule criando transação correspondente
+        Diferente das obrigações, não marca a recurring rule como "liquidada" - ela continua ativa para próximas ocorrências
+        """
+        if liquidation_date is None:
+            liquidation_date = date.today()
+        
+        # Debug logging
+        print(f"LIQUIDATE_RECURRING_RULE: user_id={user_id}, rule_id={rule_id}, account_id={account_id}")
+        print(f"LIQUIDATE_RECURRING_RULE: liquidation_date={liquidation_date}, type={type(liquidation_date)}")
+        
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        
+        try:
+            # Iniciar transação ACID
+            self.db_service.connection.autocommit = False
+            
+            # 1. Buscar dados da recurring rule
+            cursor.execute("""
+                SELECT * FROM recurring_rules 
+                WHERE id = %s AND user_id = %s AND is_active = 1
+            """, (rule_id, user_id))
+            
+            rule = cursor.fetchone()
+            if not rule:
+                raise ValueError("Recurring rule not found, not owned by user, or not active")
+            
+            # 2. Validar conta
+            cursor.execute("""
+                SELECT id, name FROM accounts 
+                WHERE id = %s AND user_id = %s
+            """, (account_id, user_id))
+            
+            account = cursor.fetchone()
+            if not account:
+                raise ValueError("Account not found or not owned by user")
+            
+            # 3. Criar transação correspondente
+            transaction_data = {
+                'description': f"Liquidação recorrência: {rule['description']}",
+                'amount': float(rule['amount']),
+                'transaction_date': liquidation_date,
+                'category': rule.get('category'),
+                'status': 'EFETIVADO'
+            }
+            
+            # Definir tipo e contas baseado no tipo da recurring rule
+            if rule['type'] == 'PAYABLE':
+                # A Pagar = DESPESA (sai da conta)
+                transaction_data['type'] = 'DESPESA'
+                transaction_data['from_account_id'] = account_id
+                transaction_data['to_account_id'] = None
+            else:
+                # A Receber = RECEITA (entra na conta)  
+                transaction_data['type'] = 'RECEITA'
+                transaction_data['from_account_id'] = None
+                transaction_data['to_account_id'] = account_id
+            
+            # Criar transação usando o transaction_service (passa cursor externo)
+            new_transaction = self.transaction_service.create_transaction(user_id, transaction_data, cursor)
+            
+            # 4. Criar financial_obligation já liquidada para registrar que foi paga neste mês
+            obligation_data = {
+                'description': f"Liquidação: {rule['description']}",
+                'amount': float(rule['amount']),
+                'due_date': liquidation_date,
+                'type': rule['type'],
+                'status': 'PAID',
+                'category': rule.get('category'),
+                'entity_name': rule.get('entity_name'),
+                'recurring_rule_id': rule_id,
+                'linked_transaction_id': new_transaction['id']
+            }
+            
+            # Debug logging da obligation
+            print(f"LIQUIDATE_RECURRING_RULE: obligation_data={obligation_data}")
+            print(f"LIQUIDATE_RECURRING_RULE: due_date in obligation_data={obligation_data['due_date']}, type={type(obligation_data['due_date'])}")
+            
+            obligation_values = (
+                user_id,
+                obligation_data['description'],
+                obligation_data['amount'],
+                obligation_data['due_date'],
+                obligation_data['type'],
+                obligation_data['status'],
+                obligation_data.get('category'),
+                obligation_data.get('entity_name'),
+                f"Gerada automaticamente pela liquidação da recurring rule {rule_id}",
+                obligation_data['recurring_rule_id'],
+                obligation_data['linked_transaction_id']
+            )
+            
+            print(f"LIQUIDATE_RECURRING_RULE: obligation_values={obligation_values}")
+            print(f"LIQUIDATE_RECURRING_RULE: due_date value={obligation_values[3]}, type={type(obligation_values[3])}")
+            
+            cursor.execute("""
+                INSERT INTO financial_obligations 
+                (user_id, description, amount, due_date, type, status, category, entity_name, notes, recurring_rule_id, linked_transaction_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, obligation_values)
+            
+            obligation_id = cursor.lastrowid
+            
+            # 5. A recurring rule continua ativa - não é marcada como liquidada
+            # Isso permite liquidações futuras da mesma recorrência
+            
+            # 6. Commit da transação ACID
+            self.db_service.connection.commit()
+            
+            # Retornar dados da liquidação
+            return {
+                'message': f'Recorrência liquidada com sucesso usando conta: {account["name"]}',
+                'rule_id': rule_id,
+                'transaction_id': new_transaction['id'],
+                'obligation_id': obligation_id,
+                'liquidation_date': liquidation_date.isoformat()
+            }
+            
+        except Exception as e:
+            # Rollback em caso de erro
+            self.db_service.connection.rollback()
+            raise Exception(f"Error liquidating recurring rule: {str(e)}")
+        finally:
+            cursor.close()
+            self.db_service.connection.autocommit = True
     
     # ==================== FUNCIONALIDADES ESPECIAIS ====================
     
@@ -541,8 +855,8 @@ class ObligationService:
     
     def get_obligations_summary_30d(self, user_id: int) -> dict:
         """
-        Retorna totais a pagar e a receber para os próximos 30 dias
-        REFATORAÇÃO CIRÚRGICA: Query única com agregação condicional
+        Retorna totais a pagar e a receber do mês atual (obrigações + recurring rules pendentes)
+        NOVA LÓGICA: Considera apenas recurring rules que ainda não foram liquidadas no mês atual
         """
         print(f"get(/obligations/summary) ||||||||||| INÍCIO")
         cursor = self.db_service.connection.cursor(dictionary=True)
@@ -550,7 +864,7 @@ class ObligationService:
             # LOG DE VERIFICAÇÃO CRÍTICO
             print(f"OBLIGATION_SERVICE: Starting summary calculation for user_id={user_id}")
             
-            # Query única atômica com agregação condicional - resolve problema de cursor state
+            # 1. Obrigações do mês atual
             cursor.execute("""
                 SELECT 
                     COALESCE(SUM(CASE WHEN type = 'PAYABLE' THEN amount ELSE 0 END), 0.00) as payable_total,
@@ -558,21 +872,50 @@ class ObligationService:
                 FROM financial_obligations 
                 WHERE user_id = %s 
                 AND status IN ('PENDING', 'OVERDUE')
-                AND due_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+                AND YEAR(due_date) = YEAR(CURDATE()) 
+                AND MONTH(due_date) = MONTH(CURDATE())
             """, (user_id,))
             
-            result = cursor.fetchone()
+            obligations_result = cursor.fetchone()
+            
+            # 2. Recurring rules ativas que ainda não foram liquidadas no mês atual
+            cursor.execute("""
+                SELECT 
+                    COALESCE(SUM(CASE WHEN type = 'PAYABLE' THEN amount ELSE 0 END), 0.00) as payable_recurring,
+                    COALESCE(SUM(CASE WHEN type = 'RECEIVABLE' THEN amount ELSE 0 END), 0.00) as receivable_recurring
+                FROM recurring_rules rr
+                WHERE rr.user_id = %s 
+                AND rr.is_active = 1
+                AND NOT EXISTS (
+                    SELECT 1 
+                    FROM financial_obligations fo
+                    WHERE fo.recurring_rule_id = rr.id 
+                    AND YEAR(fo.due_date) = YEAR(CURDATE())
+                    AND MONTH(fo.due_date) = MONTH(CURDATE())
+                    AND fo.status = 'PAID'
+                )
+            """, (user_id,))
+            
+            recurring_result = cursor.fetchone()
             
             # LOG DE VERIFICAÇÃO CRÍTICO  
-            print(f"OBLIGATION_SERVICE: Raw database result: {result}")
+            print(f"OBLIGATION_SERVICE: Obligations result: {obligations_result}")
+            print(f"OBLIGATION_SERVICE: Recurring result: {recurring_result}")
             
-            # Conversão segura com verificação de tipos
-            payable_total = float(result['payable_total']) if result and result['payable_total'] is not None else 0.0
-            receivable_total = float(result['receivable_total']) if result and result['receivable_total'] is not None else 0.0
+            # Conversão segura e soma dos totais
+            obligations_payable = float(obligations_result['payable_total']) if obligations_result and obligations_result['payable_total'] else 0.0
+            obligations_receivable = float(obligations_result['receivable_total']) if obligations_result and obligations_result['receivable_total'] else 0.0
+            
+            recurring_payable = float(recurring_result['payable_recurring']) if recurring_result and recurring_result['payable_recurring'] else 0.0
+            recurring_receivable = float(recurring_result['receivable_recurring']) if recurring_result and recurring_result['receivable_recurring'] else 0.0
+            
+            # Totais finais (obrigações + recurring rules pendentes)
+            total_payable = obligations_payable + recurring_payable
+            total_receivable = obligations_receivable + recurring_receivable
             
             summary_data = {
-                'payable_next_30d': payable_total,
-                'receivable_next_30d': receivable_total
+                'payable_next_30d': total_payable,
+                'receivable_next_30d': total_receivable
             }
             
             # LOG DE VERIFICAÇÃO CRÍTICO

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
@@ -9,7 +9,6 @@ from services.auth_service import create_access_token, get_current_user, get_pas
 from services.strategy_service import StrategyService
 from services.account_service import AccountService
 from services.asset_service import AssetService
-from services.asset_holding_service import AssetHoldingService
 from services.transaction_service import TransactionService
 from services.accounts_receivable_service import AccountsReceivableService
 from services.summary_service import SummaryService
@@ -23,6 +22,7 @@ from datetime import date, datetime
 import json
 import logging
 import traceback
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -155,14 +155,13 @@ strategy_service = StrategyService()
 account_service = AccountService(database_service)
 transaction_service = TransactionService(database_service)
 asset_service = AssetService(database_service)
-asset_holding_service = AssetHoldingService(database_service)
 accounts_receivable_service = AccountsReceivableService(database_service)
 summary_service = SummaryService(database_service)
 wallet_sync_service = WalletSyncService(database_service)
 
 # Importar price_service para o portfolio_service
 from services.price_service import PriceService
-price_service = PriceService()
+price_service = PriceService(database_service)
 portfolio_service = PortfolioService(database_service, price_service)
 obligation_service = ObligationService(database_service, transaction_service)
 reports_service = ReportsService(database_service)
@@ -207,6 +206,7 @@ class RecurringRuleUpdate(BaseModel):
     entity_name: Optional[str] = None
     frequency: Optional[str] = None
     interval_value: Optional[int] = None
+    start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_active: Optional[bool] = None
 
@@ -249,6 +249,8 @@ class RecurringRuleResponse(BaseModel):
     start_date: date
     end_date: Optional[date] = None
     is_active: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 class RecurringRulesListResponse(BaseModel):
     rules: List[RecurringRuleResponse]
@@ -324,6 +326,8 @@ class AccountCreate(BaseModel):
     credit_limit: Optional[float] = 0.00
     invoice_due_day: Optional[int] = None
     balance: Optional[float] = 0.00  # Saldo inicial da conta
+    public_address: Optional[str] = None
+    icon_url: Optional[str] = None
 
 class AccountUpdate(BaseModel):
     name: Optional[str] = None
@@ -333,6 +337,7 @@ class AccountUpdate(BaseModel):
     invoice_due_day: Optional[int] = None
     balance: Optional[float] = None  # Para ajuste de saldo
     public_address: Optional[str] = None  # Permitir campo público
+    icon_url: Optional[str] = None
     
     class Config:
         extra = "ignore"  # Ignorar campos extras enviados pelo frontend
@@ -1134,80 +1139,106 @@ async def get_asset_current_price(asset_id: int, current_user: dict = Depends(ge
 # === ASSET HOLDINGS ENDPOINTS ===
 @app.post("/holdings")
 async def create_holding(holding: AssetHoldingCreate, current_user: dict = Depends(get_current_user)):
-    """Criar uma nova posição de ativo"""
+    """DEPRECATED: Use /portfolio/movements instead. This endpoint creates asset movements."""
     user_id = database_service.get_user_id_by_username(current_user['username'])
     if not user_id:
         raise HTTPException(status_code=404, detail="User not found")
     
     try:
-        holding_data = holding.model_dump()
-        new_holding = asset_holding_service.create_holding(user_id, holding_data)
-        return new_holding
+        # Converter holding para movement
+        movement_data = {
+            "account_id": holding.account_id,
+            "asset_id": holding.asset_id,
+            "movement_type": "COMPRA",
+            "quantity": holding.quantity,
+            "price_per_unit": holding.average_buy_price,
+            "movement_date": holding.acquisition_date or datetime.now().date(),
+            "notes": "Migração de holding legado"
+        }
+        
+        result = portfolio_service.add_asset_movement(user_id, movement_data)
+        return {"message": "Movement created successfully", "result": result}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/holdings")
 async def list_holdings(account_id: Optional[int] = None, current_user: dict = Depends(get_current_user)):
-    """Listar todas as posições do usuário"""
+    """Listar todas as posições do usuário - DEPRECATED: Use /portfolio/summary"""
     user_id = database_service.get_user_id_by_username(current_user['username'])
     if not user_id:
         raise HTTPException(status_code=404, detail="User not found")
     
-    holdings = asset_holding_service.get_holdings_by_user(user_id, account_id)
-    return {"holdings": holdings}
+    try:
+        # Usar portfolio_service para consistência com asset_movements
+        portfolio = portfolio_service.get_portfolio_summary(user_id, account_id)
+        
+        # Converter formato para compatibilidade com frontend legado
+        holdings = []
+        for position in portfolio:
+            holdings.append({
+                "id": position['asset_id'],
+                "user_id": user_id,
+                "account_id": account_id,
+                "asset_id": position['asset_id'],
+                "symbol": position['symbol'],
+                "asset_name": position['name'],
+                "asset_class": position['asset_class'],
+                "quantity": position['quantity'],
+                "average_buy_price": position['average_price_brl'],
+                "current_price_brl": position['current_price_brl'],
+                "current_market_value_brl": position['market_value_brl']
+            })
+        
+        return {"holdings": holdings}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching holdings: {str(e)}")
 
 
 @app.get("/holdings/summary")
 async def get_holdings_summary(current_user: dict = Depends(get_current_user)):
-    """Obter resumo das posições agrupadas por ativo"""
+    """Obter resumo das posições agrupadas por ativo - DEPRECATED: Use /portfolio/summary"""
     user_id = database_service.get_user_id_by_username(current_user['username'])
     if not user_id:
         raise HTTPException(status_code=404, detail="User not found")
     
-    summary = asset_holding_service.get_holdings_summary_by_user(user_id)
-    return {"summary": summary}
+    try:
+        # Usar portfolio_service para consistência
+        portfolio = portfolio_service.get_portfolio_summary(user_id)
+        return {"summary": portfolio}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching holdings summary: {str(e)}")
 
 @app.get("/holdings/{holding_id}")
 async def get_holding(holding_id: int, current_user: dict = Depends(get_current_user)):
-    """Obter detalhes de uma posição específica"""
+    """DEPRECATED: Use /portfolio/summary to get aggregated positions"""
     user_id = database_service.get_user_id_by_username(current_user['username'])
     if not user_id:
         raise HTTPException(status_code=404, detail="User not found")
     
-    holding = asset_holding_service.get_holding_by_id(user_id, holding_id)
-    if not holding:
-        raise HTTPException(status_code=404, detail="Holding not found")
-    
-    return holding
+    # Retornar portfólio completo já que holdings individuais não fazem mais sentido
+    try:
+        portfolio = portfolio_service.get_portfolio_summary(user_id)
+        if not portfolio:
+            raise HTTPException(status_code=404, detail="No positions found")
+        return {"deprecated": True, "message": "Use /portfolio/summary", "portfolio": portfolio}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/holdings/{holding_id}")
 async def update_holding(holding_id: int, holding: AssetHoldingUpdate, current_user: dict = Depends(get_current_user)):
-    """Atualizar uma posição existente"""
-    user_id = database_service.get_user_id_by_username(current_user['username'])
-    if not user_id:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    try:
-        holding_data = {k: v for k, v in holding.model_dump().items() if v is not None}
-        updated_holding = asset_holding_service.update_holding(user_id, holding_id, holding_data)
-        return updated_holding
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """DEPRECATED: Use /portfolio/movements to add corrective movements"""
+    raise HTTPException(
+        status_code=410, 
+        detail="Endpoint deprecated. Use /portfolio/movements to add corrective asset movements instead of updating holdings directly."
+    )
 
 @app.delete("/holdings/{holding_id}")
 async def delete_holding(holding_id: int, current_user: dict = Depends(get_current_user)):
-    """Deletar uma posição"""
-    user_id = database_service.get_user_id_by_username(current_user['username'])
-    if not user_id:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    try:
-        success = asset_holding_service.delete_holding(user_id, holding_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Holding not found")
-        return {"message": "Holding deleted successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """DEPRECATED: Use /portfolio/movements to add sell movements"""
+    raise HTTPException(
+        status_code=410,
+        detail="Endpoint deprecated. Use /portfolio/movements with VENDA movement type to close positions instead."
+    )
 
 # === TRANSACTIONS ENDPOINTS ===
 @app.post("/transactions")
@@ -1311,36 +1342,17 @@ async def get_net_worth(current_user: dict = Depends(get_current_user)):
         """
         cursor.execute(accounts_query, (user_id,))
         accounts_result = cursor.fetchone()
-        total_accounts = accounts_result['total_accounts'] or 0
+        total_accounts = float(accounts_result['total_accounts'] or 0)
         
-        # Soma do valor de mercado das posições de ativos
-        holdings_query = """
-            SELECT 
-                ah.quantity,
-                a.price_api_identifier
-            FROM asset_holdings ah
-            JOIN assets a ON ah.asset_id = a.id
-            WHERE ah.user_id = %s
-        """
-        cursor.execute(holdings_query, (user_id,))
-        holdings = cursor.fetchall()
-        
-        total_holdings_value = 0
-        if holdings:
-            # Coletar identificadores únicos de API
-            api_identifiers = list(set([h['price_api_identifier'] for h in holdings if h['price_api_identifier']]))
-            
-            # Buscar preços em lote
-            if api_identifiers:
-                from services.price_service import PriceService
-                prices = PriceService.get_multiple_prices(api_identifiers)
-                
-                # Calcular valor total das posições
-                for holding in holdings:
-                    api_id = holding.get('price_api_identifier')
-                    if api_id and api_id in prices and prices[api_id]:
-                        price_data = prices[api_id]
-                        total_holdings_value += float(holding['quantity']) * price_data['brl']
+        # Usar portfolio_service para calcular valor total das posições via asset_movements
+        total_holdings_value = 0.0
+        try:
+            portfolio = portfolio_service.get_portfolio_summary(user_id)
+            for position in portfolio:
+                total_holdings_value += float(position.get('market_value_brl', 0))
+        except Exception as e:
+            print(f"Erro ao calcular valor do portfólio: {e}")
+            total_holdings_value = 0.0
         
         # TODO: Implementar liabilities (dívidas) quando necessário
         total_liabilities = 0
@@ -1368,44 +1380,28 @@ async def get_asset_allocation(current_user: dict = Depends(get_current_user)):
     
     cursor = database_service.connection.cursor(dictionary=True)
     try:
-        query = """
-            SELECT 
-                a.asset_class,
-                ah.quantity,
-                a.price_api_identifier
-            FROM asset_holdings ah
-            JOIN assets a ON ah.asset_id = a.id
-            WHERE ah.user_id = %s
-        """
-        cursor.execute(query, (user_id,))
-        holdings = cursor.fetchall()
-        
-        if not holdings:
-            return {"allocation": []}
-        
-        # Agrupar por classe de ativo
-        class_totals = {}
-        
-        # Coletar identificadores únicos de API
-        api_identifiers = list(set([h['price_api_identifier'] for h in holdings if h['price_api_identifier']]))
-        
-        prices = {}
-        if api_identifiers:
-            from services.price_service import PriceService
-            prices = PriceService.get_multiple_prices(api_identifiers)
-        
-        # Calcular valor por classe
-        for holding in holdings:
-            asset_class = holding['asset_class']
-            api_id = holding.get('price_api_identifier')
+        # Usar portfolio_service para obter posições via asset_movements
+        try:
+            portfolio = portfolio_service.get_portfolio_summary(user_id)
             
-            if api_id and api_id in prices and prices[api_id]:
-                price_data = prices[api_id]
-                value = float(holding['quantity']) * price_data['brl']
+            if not portfolio:
+                return {"allocation": []}
+            
+            # Agrupar por classe de ativo
+            class_totals = {}
+            
+            # Calcular valor por classe usando dados do portfolio_service
+            for position in portfolio:
+                asset_class = position.get('asset_class', 'UNKNOWN')
+                market_value = position.get('market_value_brl', 0)
                 
                 if asset_class not in class_totals:
                     class_totals[asset_class] = 0
-                class_totals[asset_class] += value
+                class_totals[asset_class] += market_value
+        
+        except Exception as e:
+            print(f"Erro ao calcular alocação de ativos: {e}")
+            return {"allocation": []}
         
         # Calcular total e percentuais
         total_value = sum(class_totals.values())
@@ -1483,17 +1479,30 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=f"Error getting dashboard summary: {str(e)}")
 
 @app.get("/summary/cash-flow-chart")
-async def get_cash_flow_chart(period: str = "monthly", current_user: dict = Depends(get_current_user)):
+async def get_cash_flow_chart(
+    period: str = "monthly", 
+    start_date: str = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(None, description="End date (YYYY-MM-DD)"),
+    current_user: dict = Depends(get_current_user)
+):
     """Endpoint para dados do gráfico de fluxo de caixa"""
     user_id = database_service.get_user_id_by_username(current_user['username'])
     if not user_id:
         raise HTTPException(status_code=404, detail="User not found")
     
     try:
-        chart_data = summary_service.get_cash_flow_chart_data(user_id, period)
-        return chart_data
+        # Se datas forem fornecidas, usar a nova função com período customizado
+        if start_date and end_date:
+            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+            chart_data = summary_service.get_cash_flow_chart_data_by_period(user_id, start_date_obj, end_date_obj, period)
+        else:
+            # Usar função original
+            chart_data = summary_service.get_cash_flow_chart_data(user_id, period)
+        
+        return {"success": True, "data": chart_data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting cash flow chart data: {str(e)}")
+        return {"success": False, "error": str(e)}
 
 # === ACCOUNTS RECEIVABLE ENDPOINTS ===
 @app.post("/accounts-receivable")
@@ -1711,18 +1720,18 @@ async def delete_asset_movement(movement_id: int, current_user: dict = Depends(g
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/summary/net-worth-history")
-async def get_net_worth_history(current_user: dict = Depends(get_current_user), days_limit: int = 365):
-    """Obter histórico de snapshots de patrimônio líquido"""
-    user_id = database_service.get_user_id_by_username(current_user['username'])
-    if not user_id:
-        raise HTTPException(status_code=404, detail="User not found")
+# @app.get("/summary/net-worth-history")
+# async def get_net_worth_history(current_user: dict = Depends(get_current_user), days_limit: int = 365):
+#     """Obter histórico de snapshots de patrimônio líquido"""
+#     user_id = database_service.get_user_id_by_username(current_user['username'])
+#     if not user_id:
+#         raise HTTPException(status_code=404, detail="User not found")
     
-    try:
-        history = summary_service.get_net_worth_history(user_id, days_limit)
-        return history
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting net worth history: {str(e)}")
+#     try:
+#         history = summary_service.get_net_worth_history(user_id, days_limit)
+#         return history
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Error getting net worth history: {str(e)}")
 
 @app.post("/portfolio/accounts/{account_id}/reconcile")
 async def reconcile_wallet_history(account_id: int, current_user: dict = Depends(get_current_user)):
@@ -1920,6 +1929,25 @@ async def settle_obligation(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.delete("/obligations/{obligation_id}/cancel-settlement")
+async def cancel_settlement(
+    obligation_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Cancelar liquidação de uma obrigação PAID (função crítica)"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        cancellation_result = obligation_service.cancel_settlement(
+            user_id=user_id,
+            obligation_id=obligation_id
+        )
+        return cancellation_result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 # === ENDPOINTS PARA REGRAS DE RECORRÊNCIA ===
 
 @app.post("/recurring-rules", response_model=RecurringRuleResponse)
@@ -1976,7 +2004,15 @@ async def update_recurring_rule(
         raise HTTPException(status_code=404, detail="User not found")
     
     try:
-        rule_data = {k: v for k, v in rule.model_dump().items() if v is not None}
+        raw_data = rule.model_dump()
+        # Filtrar apenas valores None, mas manter strings vazias e zeros
+        rule_data = {k: v for k, v in raw_data.items() if v is not None}
+        
+        # Debug logging
+        print(f"UPDATE_RECURRING_RULE_ENDPOINT: rule_id={rule_id}, user_id={user_id}")
+        print(f"UPDATE_RECURRING_RULE_ENDPOINT: raw_rule={raw_data}")
+        print(f"UPDATE_RECURRING_RULE_ENDPOINT: filtered_rule_data={rule_data}")
+        print(f"UPDATE_RECURRING_RULE_ENDPOINT: filtered_keys={list(rule_data.keys())}")
         updated_rule = obligation_service.update_recurring_rule(user_id, rule_id, rule_data)
         return updated_rule
     except Exception as e:
@@ -1994,6 +2030,59 @@ async def delete_recurring_rule(rule_id: int, current_user: dict = Depends(get_c
         if not success:
             raise HTTPException(status_code=404, detail="Recurring rule not found")
         return {"message": "Recurring rule deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/recurring-rules/{rule_id}/liquidate")
+async def liquidate_recurring_rule(
+    rule_id: int,
+    liquidation_data: SettleObligationRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Liquidar uma recurring rule criando transação correspondente"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        # Debug logging
+        print(f"LIQUIDATE_RECURRING_RULE_ENDPOINT: rule_id={rule_id}")
+        print(f"LIQUIDATE_RECURRING_RULE_ENDPOINT: liquidation_data={liquidation_data}")
+        print(f"LIQUIDATE_RECURRING_RULE_ENDPOINT: settlement_date={liquidation_data.settlement_date}, type={type(liquidation_data.settlement_date)}")
+        
+        liquidation_result = obligation_service.liquidate_recurring_rule(
+            user_id=user_id,
+            rule_id=rule_id,
+            account_id=liquidation_data.account_id,
+            liquidation_date=liquidation_data.settlement_date
+        )
+        return liquidation_result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/recurring-rules/{rule_id}/last-liquidation")
+async def get_last_liquidation_date(rule_id: int, current_user: dict = Depends(get_current_user)):
+    """Buscar data da última liquidação de uma recurring rule"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        liquidation_info = obligation_service.get_last_liquidation_date(user_id, rule_id)
+        return liquidation_info
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/recurring-rules/{rule_id}/reverse")
+async def reverse_recurring_rule_current_month(rule_id: int, current_user: dict = Depends(get_current_user)):
+    """Estornar liquidação do mês atual de uma recurring rule"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        reverse_result = obligation_service.reverse_current_month_liquidation(user_id, rule_id)
+        return reverse_result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -2066,6 +2155,423 @@ async def get_accounts_summary_for_reports(current_user: dict = Depends(get_curr
         return {"accounts": accounts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== STOCK PRICES ENDPOINTS ====================
+
+@app.post("/assets/{asset_id}/update-price")
+async def update_stock_price(asset_id: int, current_user: dict = Depends(get_current_user)):
+    """Atualizar preço de uma ação específica (BR ou US) via Alpha Vantage API"""
+    try:
+        result = price_service.update_stock_price(asset_id)
+
+        if result["success"]:
+            return {
+                "message": f"Preço atualizado com sucesso para {result['symbol']}",
+                "symbol": result["symbol"],
+                "price_brl": result["price_brl"],
+                "updated_at": result["updated_at"],
+                "asset": result["asset"]
+            }
+        else:
+            error_detail = result["error"]
+            # Lógica de erro aprimorada
+            if "API Rate Limit" in error_detail:
+                raise HTTPException(status_code=429, detail=error_detail)
+            else:
+                raise HTTPException(status_code=400, detail=error_detail)
+
+    except HTTPException:
+        # Re-lança as exceções HTTP que criamos acima
+        raise
+    except Exception as e:
+        logger.error(f"Error updating stock price in endpoint for asset {asset_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro interno do servidor ao processar a atualização de preço.")
+
+@app.post("/assets/update-prices/{asset_class}")
+async def update_stock_prices_bulk(asset_class: str, current_user: dict = Depends(get_current_user)):
+    """Atualizar preços em massa para ações (ACAO_BR ou ACAO_US)"""
+    if asset_class not in ['ACAO_BR', 'ACAO_US']:
+        raise HTTPException(status_code=400, detail="asset_class deve ser ACAO_BR ou ACAO_US")
+    
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        # Buscar todos os ativos da classe que o usuário possui
+        user_assets = price_service.get_assets_by_class(asset_class)
+        
+        if not user_assets:
+            return {
+                "message": f"Nenhum ativo da classe {asset_class} encontrado",
+                "updated_count": 0,
+                "errors": []
+            }
+        
+        updated_count = 0
+        errors = []
+        
+        for asset in user_assets:
+            try:
+                result = price_service.update_stock_price(asset['id'])
+                
+                if result["success"]:
+                    updated_count += 1
+                    logger.info(f"Preço atualizado: {asset['symbol']} = R$ {result['price_brl']}")
+                else:
+                    errors.append({
+                        "symbol": asset['symbol'],
+                        "error": result["error"]
+                    })
+                    
+                # Rate limiting - 15 segundos entre chamadas para Alpha Vantage
+                if len(user_assets) > 1:  # Só aplicar se houver múltiplos ativos
+                    time.sleep(15)
+                    
+            except Exception as e:
+                errors.append({
+                    "symbol": asset['symbol'],
+                    "error": str(e)
+                })
+                logger.error(f"Erro ao atualizar {asset['symbol']}: {e}")
+        
+        return {
+            "message": f"Atualização em massa concluída para {asset_class}",
+            "total_assets": len(user_assets),
+            "updated_count": updated_count,
+            "error_count": len(errors),
+            "errors": errors
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in bulk stock price update: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro na atualização em massa: {str(e)}")
+
+# =============================================================================
+# ENDPOINTS DE RELATÓRIOS E SNAPSHOTS - BUSINESS INTELLIGENCE
+# =============================================================================
+
+@app.post("/reports/snapshots/generate")
+async def generate_daily_snapshot(current_user = Depends(get_current_user)):
+    """
+    Gera um snapshot financeiro diário para o usuário autenticado.
+    Este endpoint aciona a geração de um snapshot completo que será usado
+    para análises históricas e relatórios de Business Intelligence.
+    """
+    try:
+        db_service = DatabaseService()
+        reports_service = ReportsService(db_service)
+        
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        if not user_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        result = reports_service.generate_daily_snapshot(user_id)
+        
+        if result["success"]:
+            return {
+                "success": True,
+                "message": "Snapshot gerado com sucesso",
+                "data": result
+            }
+        else:
+            raise HTTPException(status_code=400, detail=result["error"])
+            
+    except Exception as e:
+        logger.error(f"Error generating daily snapshot: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar snapshot: {str(e)}")
+
+@app.get("/reports/snapshots/history")
+async def get_snapshots_history(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user = Depends(get_current_user)
+):
+    """
+    Busca o histórico de snapshots financeiros do usuário em um período específico.
+    
+    Args:
+        start_date: Data inicial no formato YYYY-MM-DD (opcional)
+        end_date: Data final no formato YYYY-MM-DD (opcional)
+    
+    Returns:
+        Lista de snapshots ordenados por data para análise histórica
+    """
+    try:
+        from datetime import datetime, date
+        
+        # Converter strings para objetos date se fornecidas
+        parsed_start_date = None
+        parsed_end_date = None
+        
+        if start_date:
+            try:
+                parsed_start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Formato de start_date inválido. Use YYYY-MM-DD")
+        
+        if end_date:
+            try:
+                parsed_end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Formato de end_date inválido. Use YYYY-MM-DD")
+        
+        db_service = DatabaseService()
+        reports_service = ReportsService(db_service)
+        
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        if not user_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        snapshots = reports_service.get_snapshots_history(
+            user_id,
+            parsed_start_date,
+            parsed_end_date
+        )
+        
+        return {
+            "success": True,
+            "count": len(snapshots),
+            "snapshots": snapshots
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching snapshots history: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar histórico de snapshots: {str(e)}")
+
+@app.get("/reports/expense-analysis")
+async def get_expense_analysis(current_user = Depends(get_current_user)):
+    """
+    Análise detalhada de despesas baseada no snapshot mais recente.
+    Retorna a quebra de despesas por categoria dos últimos 30 dias.
+    """
+    try:
+        db_service = DatabaseService()
+        reports_service = ReportsService(db_service)
+        
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        if not user_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        analysis = reports_service.get_expense_analysis(user_id)
+        
+        if analysis["success"]:
+            return analysis
+        else:
+            raise HTTPException(status_code=404, detail=analysis["error"])
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching expense analysis: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar análise de despesas: {str(e)}")
+
+@app.get("/reports/snapshots/historical-allocation")
+async def get_historical_allocation(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user = Depends(get_current_user)
+):
+    """
+    Busca a alocação histórica de ativos por classe para gráfico de área empilhada.
+    
+    Args:
+        start_date: Data inicial no formato YYYY-MM-DD (opcional)
+        end_date: Data final no formato YYYY-MM-DD (opcional)
+    """
+    try:
+        db_service = DatabaseService()
+        reports_service = ReportsService(db_service)
+        
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        if not user_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Parse das datas se fornecidas
+        parsed_start_date = None
+        parsed_end_date = None
+        
+        if start_date:
+            try:
+                parsed_start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Formato de start_date inválido. Use YYYY-MM-DD")
+        
+        if end_date:
+            try:
+                parsed_end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Formato de end_date inválido. Use YYYY-MM-DD")
+        
+        historical_data = reports_service.get_historical_allocation(
+            user_id, 
+            parsed_start_date, 
+            parsed_end_date
+        )
+        
+        return {
+            "success": True,
+            "count": len(historical_data),
+            "data": historical_data
+        }
+        
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error fetching historical allocation: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar alocação histórica: {str(e)}")
+
+@app.get("/reports/snapshots/details/{snapshot_date}")
+async def get_snapshot_details(
+    snapshot_date: str,
+    current_user = Depends(get_current_user)
+):
+    """
+    Recalcula o estado do patrimônio para uma data específica (drill-down).
+    
+    Args:
+        snapshot_date: Data no formato YYYY-MM-DD
+    """
+    try:
+        db_service = DatabaseService()
+        reports_service = ReportsService(db_service)
+        
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        if not user_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Parse da data
+        try:
+            parsed_date = datetime.strptime(snapshot_date, '%Y-%m-%d').date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato de data inválido. Use YYYY-MM-DD")
+        
+        details = reports_service.get_snapshot_details(user_id, parsed_date)
+        
+        return details
+        
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error fetching snapshot details: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar detalhes do snapshot: {str(e)}")
+
+@app.get("/reports/snapshots/kpi-variation")
+async def get_kpi_variation(
+    period: str = "30d",
+    current_user = Depends(get_current_user)
+):
+    """
+    Calcula a variação percentual dos KPIs entre o primeiro e último snapshot no período.
+    
+    Args:
+        period: Período de análise (30d, 60d, 90d, etc.)
+    """
+    try:
+        db_service = DatabaseService()
+        reports_service = ReportsService(db_service)
+        
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        if not user_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Parse do período
+        if period.endswith('d'):
+            try:
+                period_days = int(period[:-1])
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Formato de período inválido. Use formato como '30d'")
+        else:
+            raise HTTPException(status_code=400, detail="Formato de período inválido. Use formato como '30d'")
+        
+        variations = reports_service.get_kpi_variation(user_id, period_days)
+        
+        return variations
+        
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error calculating KPI variations: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao calcular variações de KPIs: {str(e)}")
+
+@app.get("/reports/top-expenses")
+async def get_top_expenses(
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Busca as 10 maiores despesas do período especificado.
+    """
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        # Converter strings para objetos date
+        start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+        
+        # Validar período
+        if start_date_obj > end_date_obj:
+            raise HTTPException(status_code=400, detail="Start date must be before end date")
+        
+        # Buscar maiores despesas
+        result = reports_service.get_top_expenses(user_id, start_date_obj, end_date_obj)
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Erro desconhecido'))
+        
+        return result
+        
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(ve)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching top expenses: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar maiores despesas: {str(e)}")
+
+@app.get("/reports/cash-flow-kpis")
+async def get_cash_flow_kpis(
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Busca os KPIs de fluxo de caixa para o período especificado.
+    Calcula receitas, despesas e saldo diretamente da tabela transactions.
+    """
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        # Converter strings para objetos date
+        start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+        
+        # Validar período
+        if start_date_obj > end_date_obj:
+            raise HTTPException(status_code=400, detail="Start date must be before end date")
+        
+        # Buscar KPIs de fluxo de caixa
+        result = reports_service.get_cash_flow_kpis(user_id, start_date_obj, end_date_obj)
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Erro desconhecido'))
+        
+        return result
+        
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(ve)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching cash flow KPIs: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar KPIs de fluxo de caixa: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

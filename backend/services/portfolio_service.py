@@ -69,6 +69,7 @@ class PortfolioService:
                     a.name as asset_name,
                     a.asset_class,
                     a.price_api_identifier,
+                    a.icon_url,
                     a.last_price_usdt,
                     a.last_price_brl,
                     a.last_price_updated_at,
@@ -95,7 +96,7 @@ class PortfolioService:
                 FROM asset_movements am
                 JOIN assets a ON am.asset_id = a.id
                 WHERE {' AND '.join(where_conditions)}
-                GROUP BY am.asset_id, a.symbol, a.name, a.asset_class, a.price_api_identifier, 
+                GROUP BY am.asset_id, a.symbol, a.name, a.asset_class, a.price_api_identifier, a.icon_url,
                          a.last_price_usdt, a.last_price_brl, a.last_price_updated_at
                 HAVING (total_bought - total_sold) > 0
             """
@@ -178,6 +179,7 @@ class PortfolioService:
                     'symbol': position.get('symbol', 'UNKNOWN'),
                     'name': position.get('asset_name', 'Unknown Asset'),
                     'asset_class': position.get('asset_class', 'UNKNOWN'),
+                    'icon_url': position.get('icon_url'),
                     'quantity': float(current_quantity) if current_quantity else 0.00,
                     
                     # Preços médios de aquisição
@@ -256,6 +258,7 @@ class PortfolioService:
                     a.symbol,
                     a.name as asset_name,
                     a.asset_class,
+                    a.icon_url,
                     acc.name as account_name
                 FROM asset_movements am
                 JOIN assets a ON am.asset_id = a.id

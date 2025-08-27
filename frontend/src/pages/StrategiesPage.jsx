@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Title, 
   Button, 
-  Table, 
   Modal, 
   TextInput, 
   Textarea, 
@@ -14,7 +13,10 @@ import {
   Alert,
   Tooltip,
   Box,
-  Text
+  Text,
+  Card,
+  ScrollArea,
+  Badge
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { 
@@ -28,6 +30,7 @@ import {
 import api from '../api';
 import { TokenInput } from '../components/TokenInput';
 import { findTokenByAddress } from '../utils/tokenConstants';
+import { AdvancedTable } from '../components/AdvancedTable';
 
 export function StrategiesPage() {
   // Estados do componente
@@ -200,8 +203,76 @@ export function StrategiesPage() {
     { value: 'PRICE_TRIGGER', label: 'Gatilho de Preço Simples' }
   ];
 
+  // Configuração das colunas para AdvancedTable
+  const columns = [
+    {
+      accessor: 'name',
+      header: 'Nome',
+      sortable: true,
+      filterable: true,
+      filterType: 'text',
+      filterPlaceholder: 'Filtrar por nome...',
+      render: (row) => <Text size="sm" fw={500}>{row.name}</Text>
+    },
+    {
+      accessor: 'description',
+      header: 'Descrição',
+      sortable: true,
+      filterable: true,
+      filterType: 'text',
+      filterPlaceholder: 'Filtrar por descrição...',
+      render: (row) => <Text size="sm">{row.description || '-'}</Text>
+    },
+    {
+      accessor: 'type',
+      header: 'Tipo',
+      sortable: true,
+      filterable: true,
+      filterType: 'select',
+      filterOptions: strategyTypes,
+      render: (row) => {
+        const typeLabel = row.parameters?.type === 'PRICE_TRIGGER' ? 'Gatilho de Preço' : row.parameters?.type || '-';
+        return (
+          <Badge variant="light" color="blue" size="sm">
+            {typeLabel}
+          </Badge>
+        );
+      }
+    },
+    {
+      accessor: 'actions',
+      header: 'Ações',
+      sortable: false,
+      filterable: false,
+      align: 'center',
+      render: (row) => (
+        <Group gap="xs">
+          <ActionIcon
+            variant="light"
+            color="blue"
+            onClick={() => openEditModal(row)}
+            disabled={loading}
+            size="sm"
+          >
+            <IconPencil size={14} />
+          </ActionIcon>
+          <ActionIcon
+            variant="light"
+            color="red"
+            onClick={() => openDeleteModal(row)}
+            disabled={loading}
+            size="sm"
+          >
+            <IconTrash size={14} />
+          </ActionIcon>
+        </Group>
+      )
+    }
+  ];
+
   return (
-    <Stack gap="md">
+    <div className="page-with-advanced-table">
+      <div className="page-header">
       <Title order={2}>Gerenciador de Estratégias</Title>
       
       {error && (
@@ -220,58 +291,16 @@ export function StrategiesPage() {
         </Button>
       </Group>
 
-      {/* Tabela de estratégias */}
-      <Table striped highlightOnHover>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Nome</Table.Th>
-            <Table.Th>Descrição</Table.Th>
-            <Table.Th>Tipo</Table.Th>
-            <Table.Th width={120}>Ações</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {strategies.length === 0 ? (
-            <Table.Tr>
-              <Table.Td colSpan={4} style={{ textAlign: 'center', padding: '2rem' }}>
-                <Text c="dimmed">
-                  {loading ? 'Carregando estratégias...' : 'Nenhuma estratégia encontrada'}
-                </Text>
-              </Table.Td>
-            </Table.Tr>
-          ) : (
-            strategies.map((strategy) => (
-              <Table.Tr key={strategy.id}>
-                <Table.Td>{strategy.name}</Table.Td>
-                <Table.Td>{strategy.description || '-'}</Table.Td>
-                <Table.Td>
-                  {strategy.parameters?.type === 'PRICE_TRIGGER' ? 'Gatilho de Preço' : strategy.parameters?.type || '-'}
-                </Table.Td>
-                <Table.Td>
-                  <Group gap="xs">
-                    <ActionIcon
-                      variant="light"
-                      color="blue"
-                      onClick={() => openEditModal(strategy)}
-                      disabled={loading}
-                    >
-                      <IconPencil size={14} />
-                    </ActionIcon>
-                    <ActionIcon
-                      variant="light"
-                      color="red"
-                      onClick={() => openDeleteModal(strategy)}
-                      disabled={loading}
-                    >
-                      <IconTrash size={14} />
-                    </ActionIcon>
-                  </Group>
-                </Table.Td>
-              </Table.Tr>
-            ))
-          )}
-        </Table.Tbody>
-      </Table>
+      </div>
+
+      <div className="page-table-container">
+        <AdvancedTable
+          data={strategies}
+          columns={columns}
+          emptyStateText={loading ? "Carregando estratégias..." : "Nenhuma estratégia encontrada"}
+          emptyStateDescription="Crie sua primeira estratégia de automação"
+        />
+      </div>
 
       {/* Modal de criação/edição */}
       <Modal
@@ -430,6 +459,6 @@ export function StrategiesPage() {
           </Group>
         </Stack>
       </Modal>
-    </Stack>
+    </div>
   );
 }

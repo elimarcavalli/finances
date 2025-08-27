@@ -195,22 +195,69 @@ class TransactionService:
     
     def delete_transaction(self, user_id: int, transaction_id: int) -> bool:
         """
-        Deleta uma transação.
-        AVISO: Esta operação é complexa pois precisa reverter o efeito da transação nos saldos.
-        Para o MVP, recomenda-se focar apenas em criar e listar.
+        Deleta uma transação e reverte obrigações vinculadas para PENDING.
+        FUNÇÃO CRÍTICA: Garante integridade referencial com obrigações.
         """
-        # Implementação complexa - reverter efeito nos saldos antes de deletar
-        # Por ora, implementação simples sem reversão de saldos
-        cursor = self.db_service.connection.cursor()
+        cursor = self.db_service.connection.cursor(dictionary=True)
         try:
-            query = "DELETE FROM transactions WHERE id = %s AND user_id = %s"
-            cursor.execute(query, (transaction_id, user_id))
+            # Iniciar transação ACID
+            self.db_service.connection.autocommit = False
+            
+            # 1. Verificar se a transação existe e pertence ao usuário
+            cursor.execute("""
+                SELECT id, description FROM transactions 
+                WHERE id = %s AND user_id = %s
+            """, (transaction_id, user_id))
+            
+            transaction = cursor.fetchone()
+            if not transaction:
+                self.db_service.connection.rollback()
+                return False
+            
+            # 2. Buscar obrigações vinculadas a esta transação
+            cursor.execute("""
+                SELECT id, description, status, recurring_rule_id FROM financial_obligations 
+                WHERE user_id = %s AND linked_transaction_id = %s
+            """, (user_id, transaction_id))
+            
+            linked_obligations = cursor.fetchall()
+            
+            # 3. Tratar obrigações vinculadas baseado no tipo
+            if linked_obligations:
+                for obligation in linked_obligations:
+                    if obligation['recurring_rule_id']:
+                        # Obrigação gerada por recurring rule - deletar
+                        cursor.execute("""
+                            DELETE FROM financial_obligations 
+                            WHERE id = %s AND user_id = %s
+                        """, (obligation['id'], user_id))
+                        print(f"TRANSACTION_SERVICE: Recurring rule obligation {obligation['id']} ({obligation['description']}) deleted")
+                    else:
+                        # Obrigação normal - reverter para PENDING
+                        cursor.execute("""
+                            UPDATE financial_obligations 
+                            SET status = 'PENDING', 
+                                linked_transaction_id = NULL,
+                                updated_at = NOW()
+                            WHERE id = %s AND user_id = %s
+                        """, (obligation['id'], user_id))
+                        print(f"TRANSACTION_SERVICE: Normal obligation {obligation['id']} ({obligation['description']}) reverted to PENDING")
+            
+            # 4. Deletar a transação
+            cursor.execute("""
+                DELETE FROM transactions 
+                WHERE id = %s AND user_id = %s
+            """, (transaction_id, user_id))
+            
+            # 5. Commit da transação ACID
             self.db_service.connection.commit()
             
+            print(f"TRANSACTION_SERVICE: Transaction {transaction_id} deleted, {len(linked_obligations)} obligations reverted to PENDING")
             return cursor.rowcount > 0
             
         except Exception as err:
             self.db_service.connection.rollback()
-            raise Exception(f"Erro ao deletar transação: {err}")
+            raise Exception(f"Erro ao deletar transação e reverter obrigações: {err}")
         finally:
             cursor.close()
+            self.db_service.connection.autocommit = True

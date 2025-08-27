@@ -42,8 +42,8 @@ class AccountService:
 
             # 1. Criar a conta
             query = """
-                INSERT INTO accounts (user_id, name, type, institution, credit_limit, invoice_due_day, public_address) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO accounts (user_id, name, type, institution, credit_limit, invoice_due_day, public_address, icon_url) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """
             values = (
                 user_id,
@@ -52,7 +52,8 @@ class AccountService:
                 account_data.get('institution'),
                 account_data.get('credit_limit', 0.00),
                 account_data.get('invoice_due_day'),
-                account_data.get('public_address')
+                account_data.get('public_address'),
+                account_data.get('icon_url')
             )
 
             cursor.execute(query, values)
@@ -361,7 +362,7 @@ class AccountService:
             fields = []
             values = []
             
-            allowed_fields = ['name', 'type', 'institution', 'credit_limit', 'invoice_due_day', 'balance']
+            allowed_fields = ['name', 'type', 'institution', 'credit_limit', 'invoice_due_day', 'balance', 'icon_url']
             for field in allowed_fields:
                 if field in account_data:
                     fields.append(f"{field} = %s")

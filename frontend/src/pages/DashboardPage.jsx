@@ -12,7 +12,8 @@ import {
   NumberFormatter,
   Progress,
   Alert,
-  SegmentedControl
+  SegmentedControl,
+  UnstyledButton
 } from '@mantine/core';
 import {
   PieChart,
@@ -29,9 +30,10 @@ import {
   LineChart,
   Line
 } from 'recharts';
-import { IconTrendingUp, IconTrendingDown, IconWallet, IconCoins, IconCash, IconAlertCircle, IconPigMoney, IconReceiptTax, IconCalendarEvent } from '@tabler/icons-react';
+import { IconTrendingUp, IconTrendingDown, IconWallet, IconCoins, IconCash, IconAlertCircle, IconPigMoney, IconReceiptTax, IconCalendarEvent, IconReceipt, IconCurrencyDollar, IconSortAscending, IconSortDescending } from '@tabler/icons-react';
 import api from '../api';
 import { handleApiError } from '../utils/errorHandler';
+import { useSorting } from '../hooks/useSorting';
 
 const COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff7c7c', '#8dd1e1', '#d084d0', '#87ceeb', '#ffb347'];
 
@@ -56,6 +58,10 @@ export function DashboardPage() {
   const [chartLoading, setChartLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [obligationsLoading, setObligationsLoading] = useState(false);
+  
+  // Hooks de ordenação para as tabelas
+  const holdingsSorting = useSorting('value', 'desc');
+  const accountsSorting = useSorting('balance', 'desc');
 
   const formatCurrency = (value) => {
     if (value === null || value === undefined) return 'R$ 0,00';
@@ -71,7 +77,7 @@ export function DashboardPage() {
       const dashboardRes = await api.get('/summary/dashboard');
       setDashboardData(dashboardRes.data);
       await fetchCashFlowChart(cashFlowPeriod);
-      await fetchNetWorthHistory();
+      // await fetchNetWorthHistory();
     } catch (error) {
       handleApiError(error, 'Erro ao carregar dados do dashboard');
     } finally {
@@ -83,7 +89,9 @@ export function DashboardPage() {
     setChartLoading(true);
     try {
       const chartRes = await api.get(`/summary/cash-flow-chart?period=${period}`);
-      setCashFlowChart(chartRes.data);
+      // Verificar se a resposta tem o novo formato {success: true, data: [...]}
+      const chartData = chartRes.data?.data ? chartRes.data.data : chartRes.data;
+      setCashFlowChart(chartData || []);
     } catch (error) {
       handleApiError(error, 'Erro ao carregar gráfico de fluxo de caixa');
     } finally {
@@ -91,17 +99,17 @@ export function DashboardPage() {
     }
   };
 
-  const fetchNetWorthHistory = async () => {
-    setHistoryLoading(true);
-    try {
-      const historyRes = await api.get('/summary/net-worth-history');
-      setNetWorthHistory(historyRes.data);
-    } catch (error) {
-      handleApiError(error, 'Erro ao carregar histórico de patrimônio');
-    } finally {
-      setHistoryLoading(false);
-    }
-  };
+  // const fetchNetWorthHistory = async () => {
+  //   setHistoryLoading(true);
+  //   try {
+  //     const historyRes = await api.get('/summary/net-worth-history');
+  //     setNetWorthHistory(historyRes.data);
+  //   } catch (error) {
+  //     handleApiError(error, 'Erro ao carregar histórico de patrimônio');
+  //   } finally {
+  //     setHistoryLoading(false);
+  //   }
+  // };
 
   const fetchUpcomingObligations = async () => {
     setObligationsLoading(true);
@@ -183,8 +191,8 @@ export function DashboardPage() {
 
       {/* KPIs Grid */}
       <Grid>
-        <Grid.Col span={{ base: 12, sm: 6, md: 3 }}>
-          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #667eea 0%, #764ba2 100%)' }}>
+        <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
+          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #c67afdff 0%, #490092ff 100%)' }}>
             <Group justify="space-between">
               <div>
                 <Text c="white" size="xs" fw={500}>Patrimônio Líquido</Text>
@@ -197,8 +205,8 @@ export function DashboardPage() {
           </Card>
         </Grid.Col>
 
-        <Grid.Col span={{ base: 12, sm: 6, md: 3 }}>
-          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #10b981 0%, #059669 100%)' }}>
+        <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
+          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #5272ffff 0%, #059669 100%)' }}>
             <Group justify="space-between">
               <div>
                 <Text c="white" size="xs" fw={500}>Total Investido</Text>
@@ -210,8 +218,8 @@ export function DashboardPage() {
             </Group>
           </Card>
         </Grid.Col>
-
-        <Grid.Col span={{ base: 12, sm: 6, md: 3 }}>
+        
+        <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
           <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #f59e0b 0%, #d97706 100%)' }}>
             <Group justify="space-between">
               <div>
@@ -225,16 +233,30 @@ export function DashboardPage() {
           </Card>
         </Grid.Col>
 
-        <Grid.Col span={{ base: 12, sm: 6, md: 3 }}>
+        <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
           <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #8b5cf6 0%, #7c3aed 100%)' }}>
             <Group justify="space-between">
               <div>
-                <Text c="white" size="xs" fw={500}>A Receber</Text>
+                <Text c="white" size="xs" fw={500}>A Receber (MÊS ATUAL)</Text>
                 <Text c="white" size="lg" fw={700}>
                   {formatCurrency(dashboardData?.upcomingReceivables?.total)}
                 </Text>
               </div>
-              <IconReceiptTax size={32} color="white" style={{ opacity: 0.8 }} />
+              <IconCurrencyDollar size={32} color="white" style={{ opacity: 0.8 }} />
+            </Group>
+          </Card>
+        </Grid.Col>
+
+        <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
+          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #ef4444 0%, #dc2626 100%)' }}>
+            <Group justify="space-between">
+              <div>
+                <Text c="white" size="xs" fw={500}>A Pagar (MÊS ATUAL)</Text>
+                <Text c="white" size="lg" fw={700}>
+                  {formatCurrency(dashboardData?.upcomingPayables?.total)}
+                </Text>
+              </div>
+              <IconReceipt size={32} color="white" style={{ opacity: 0.8 }} />
             </Group>
           </Card>
         </Grid.Col>
@@ -379,13 +401,46 @@ export function DashboardPage() {
                     <Table>
                       <Table.Thead>
                         <Table.Tr>
-                          <Table.Th>Ativo</Table.Th>
-                          <Table.Th ta="right">Quantidade</Table.Th>
-                          <Table.Th ta="right">Valor</Table.Th>
+                          <Table.Th>
+                            <UnstyledButton onClick={() => holdingsSorting.handleSort('symbol')}>
+                              <Group gap="xs">
+                                <Text fw={500} size="sm">Ativo</Text>
+                                {holdingsSorting.sortField === 'symbol' && (
+                                  holdingsSorting.sortDirection === 'asc' ? 
+                                  <IconSortAscending size={12} /> : 
+                                  <IconSortDescending size={12} />
+                                )}
+                              </Group>
+                            </UnstyledButton>
+                          </Table.Th>
+                          <Table.Th ta="right">
+                            <UnstyledButton onClick={() => holdingsSorting.handleSort('quantity')}>
+                              <Group gap="xs" justify="flex-end">
+                                <Text fw={500} size="sm">Quantidade</Text>
+                                {holdingsSorting.sortField === 'quantity' && (
+                                  holdingsSorting.sortDirection === 'asc' ? 
+                                  <IconSortAscending size={12} /> : 
+                                  <IconSortDescending size={12} />
+                                )}
+                              </Group>
+                            </UnstyledButton>
+                          </Table.Th>
+                          <Table.Th ta="right">
+                            <UnstyledButton onClick={() => holdingsSorting.handleSort('value')}>
+                              <Group gap="xs" justify="flex-end">
+                                <Text fw={500} size="sm">Valor</Text>
+                                {holdingsSorting.sortField === 'value' && (
+                                  holdingsSorting.sortDirection === 'asc' ? 
+                                  <IconSortAscending size={12} /> : 
+                                  <IconSortDescending size={12} />
+                                )}
+                              </Group>
+                            </UnstyledButton>
+                          </Table.Th>
                         </Table.Tr>
                       </Table.Thead>
                       <Table.Tbody>
-                        {dashboardData.cryptoPortfolio.top_holdings.slice(0, 5).map((holding) => (
+                        {holdingsSorting.sortData(dashboardData.cryptoPortfolio.top_holdings || []).slice(0, 5).map((holding) => (
                           <Table.Tr key={holding.symbol}>
                             <Table.Td>
                               <Stack gap={2}>
@@ -568,13 +623,46 @@ export function DashboardPage() {
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Conta</Table.Th>
-                  <Table.Th>Tipo</Table.Th>
-                  <Table.Th ta="right">Saldo</Table.Th>
+                  <Table.Th>
+                    <UnstyledButton onClick={() => accountsSorting.handleSort('name')}>
+                      <Group gap="xs">
+                        <Text fw={500} size="sm">Conta</Text>
+                        {accountsSorting.sortField === 'name' && (
+                          accountsSorting.sortDirection === 'asc' ? 
+                          <IconSortAscending size={12} /> : 
+                          <IconSortDescending size={12} />
+                        )}
+                      </Group>
+                    </UnstyledButton>
+                  </Table.Th>
+                  <Table.Th>
+                    <UnstyledButton onClick={() => accountsSorting.handleSort('type')}>
+                      <Group gap="xs">
+                        <Text fw={500} size="sm">Tipo</Text>
+                        {accountsSorting.sortField === 'type' && (
+                          accountsSorting.sortDirection === 'asc' ? 
+                          <IconSortAscending size={12} /> : 
+                          <IconSortDescending size={12} />
+                        )}
+                      </Group>
+                    </UnstyledButton>
+                  </Table.Th>
+                  <Table.Th ta="right">
+                    <UnstyledButton onClick={() => accountsSorting.handleSort('balance')}>
+                      <Group gap="xs" justify="flex-end">
+                        <Text fw={500} size="sm">Saldo</Text>
+                        {accountsSorting.sortField === 'balance' && (
+                          accountsSorting.sortDirection === 'asc' ? 
+                          <IconSortAscending size={12} /> : 
+                          <IconSortDescending size={12} />
+                        )}
+                      </Group>
+                    </UnstyledButton>
+                  </Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {dashboardData.accountSummary.map((account) => (
+                {accountsSorting.sortData(dashboardData.accountSummary || []).map((account) => (
                   <Table.Tr key={account.id}>
                     <Table.Td>
                       <Text fw={500}>{account.name}</Text>
