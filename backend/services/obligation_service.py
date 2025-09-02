@@ -10,6 +10,28 @@ from typing import Dict, List, Optional, Any
 from .database_service import DatabaseService
 from .transaction_service import TransactionService
 
+def calculate_suggested_settlement_date(reference_date: date) -> date:
+    """
+    Calcula data sugerida de liquidação baseada numa data de referência.
+    Para recurring rules: usa start_date como referência
+    Para obligations: usa due_date como referência
+    Retorna o mesmo dia no mês atual, ou último dia do mês se o dia não existir
+    """
+    from datetime import date, datetime
+    import calendar
+    
+    today = date.today()
+    target_year = today.year
+    target_month = today.month
+    target_day = reference_date.day
+    
+    # Verificar se o dia existe no mês atual
+    max_day_in_month = calendar.monthrange(target_year, target_month)[1]
+    if target_day > max_day_in_month:
+        target_day = max_day_in_month
+    
+    return date(target_year, target_month, target_day)
+
 class ObligationService:
     def __init__(self, db_service: DatabaseService, transaction_service: TransactionService):
         self.db_service = db_service
@@ -153,7 +175,7 @@ class ObligationService:
                     values.append(obligation_data[field])
             
             if not fields:
-                raise ValueError("No valid fields to update")
+                raise ValueError("Nenhum campo válido para atualizar")
             
             # Adicionar updated_at
             fields.append("updated_at = NOW()")
@@ -169,7 +191,7 @@ class ObligationService:
             self.db_service.connection.commit()
             
             if cursor.rowcount == 0:
-                raise ValueError("Obligation not found or not owned by user")
+                raise ValueError("Obrigação não encontrada ou não pertence ao usuário")
             
             return self.get_obligation_by_id(user_id, obligation_id)
             
@@ -200,7 +222,7 @@ class ObligationService:
                 raise ValueError("Obligation not found")
             
             if obligation[0] == 'PAID' and obligation[1]:
-                raise ValueError("Cannot delete a settled obligation")
+                raise ValueError("Não é permitido excluir uma obrigação Liquidada, primeiro cancele a Liquidação")
             
             # Deletar obrigação
             cursor.execute("""
@@ -222,14 +244,11 @@ class ObligationService:
     
     # ==================== LIQUIDAÇÃO INTELIGENTE ====================
     
-    def settle_obligation(self, user_id: int, obligation_id: int, account_id: int, settlement_date: date = None) -> dict:
+    def settle_obligation(self, user_id: int, obligation_id: int, from_account_id: int, to_account_id: int, settlement_date: date = None) -> dict:
         """
         FUNÇÃO CRÍTICA: Liquida uma obrigação criando transação correspondente
         Tudo dentro de transação ACID para garantir consistência
         """
-        if settlement_date is None:
-            settlement_date = date.today()
-        
         cursor = self.db_service.connection.cursor(dictionary=True)
         
         try:
@@ -246,16 +265,35 @@ class ObligationService:
             if not obligation:
                 raise ValueError("Obligation not found or already settled")
             
-            # 2. Validar conta
-            cursor.execute("""
-                SELECT id, name FROM accounts 
-                WHERE id = %s AND user_id = %s
-            """, (account_id, user_id))
+            # 1.2. Calcular data de liquidação automática se não fornecida
+            if settlement_date is None:
+                due_date = obligation['due_date']
+                if isinstance(due_date, str):
+                    due_date = datetime.strptime(due_date, '%Y-%m-%d').date()
+                settlement_date = calculate_suggested_settlement_date(due_date)
             
-            account = cursor.fetchone()
-            if not account:
-                raise ValueError("Account not found or not owned by user")
+            # 2. Validar contas (apenas se foram fornecidas)
+            if from_account_id:
+                cursor.execute("""
+                    SELECT id, name FROM accounts 
+                    WHERE id = %s AND user_id = %s
+                """, (from_account_id, user_id))
+                
+                account = cursor.fetchone()
+                if not account:
+                    raise ValueError("Conta origem inválida ou não pertence ao usuário")
             
+            if to_account_id:
+                cursor.execute("""
+                    SELECT id, name FROM accounts 
+                    WHERE id = %s AND user_id = %s
+                """, (to_account_id, user_id))
+
+                account = cursor.fetchone()
+                if not account:
+                    raise ValueError("Conta destino inválida ou não pertence ao usuário")
+            
+
             # 3. Criar transação correspondente
             transaction_data = {
                 'description': f"Liquidação: {obligation['description']}",
@@ -266,16 +304,17 @@ class ObligationService:
             }
             
             # Definir tipo e contas baseado no tipo da obrigação
-            if obligation['type'] == 'PAYABLE':
-                # A Pagar = DESPESA (sai da conta)
-                transaction_data['type'] = 'DESPESA'
-                transaction_data['from_account_id'] = account_id
-                transaction_data['to_account_id'] = None
-            else:
-                # A Receber = RECEITA (entra na conta)  
+            if from_account_id and to_account_id:
+                transaction_data['type'] = 'TRANSFERENCIA'
+            elif to_account_id:
                 transaction_data['type'] = 'RECEITA'
-                transaction_data['from_account_id'] = None
-                transaction_data['to_account_id'] = account_id
+            elif from_account_id:
+                transaction_data['type'] = 'DESPESA'
+            else:
+                raise ValueError("Conta de origem ou destino obrigatórias para liquidar uma obrigação")
+
+            transaction_data['from_account_id'] = from_account_id
+            transaction_data['to_account_id'] = to_account_id
             
             # Criar transação usando o transaction_service
             new_transaction = self.transaction_service.create_transaction(user_id, transaction_data)
@@ -327,21 +366,21 @@ class ObligationService:
             
             obligation = cursor.fetchone()
             if not obligation:
-                raise ValueError("Obligation not found, not owned by user, or not in PAID status")
+                raise ValueError("Obrigação não encontrada ou ainda não foi liquidada")
             
             # 2. Verificar se há transação vinculada para deletar
             linked_transaction_id = obligation.get('linked_transaction_id')
             if not linked_transaction_id:
-                raise ValueError("No linked transaction found to cancel")
+                raise ValueError("Não existe transação vinculada para essa obrigação")
             
             # 3. Deletar a transação vinculada usando transaction_service
             try:
                 delete_success = self.transaction_service.delete_transaction(user_id, linked_transaction_id)
                 if not delete_success:
-                    raise ValueError("Failed to delete linked transaction")
+                    raise ValueError("Erro ao deletar transação vinculada")
             except Exception as e:
-                raise ValueError(f"Error deleting linked transaction: {str(e)}")
-            
+                raise ValueError(f"Erro ao deletar transação vinculada: {str(e)}")
+             
             # 4. Reverter obrigação para status PENDING
             cursor.execute("""
                 UPDATE financial_obligations 
@@ -357,19 +396,28 @@ class ObligationService:
             # Retornar dados da obrigação atualizada
             return {
                 'obligation': self.get_obligation_by_id(user_id, obligation_id),
-                'message': 'Settlement cancelled successfully',
+                'message': 'Liquidação cancelada com sucesso',
                 'cancelled_transaction_id': linked_transaction_id
             }
             
         except Exception as e:
             # Rollback em caso de erro
             self.db_service.connection.rollback()
-            raise Exception(f"Error cancelling settlement: {str(e)}")
+            raise Exception(f"Erro ao cancelar liquidação: {str(e)}")
         finally:
             cursor.close()
             self.db_service.connection.autocommit = True
     
     # ==================== CRUD RECURRING RULES ====================
+    
+    def _validate_account_exists(self, cursor, account_id: int, user_id: int, field_label: str) -> bool:
+        """
+        Valida se uma conta existe e pertence ao usuário
+        """
+        cursor.execute("SELECT id FROM accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
+        if not cursor.fetchone():
+            raise ValueError(f"Conta {field_label} (ID: {account_id}) não encontrada ou não pertence ao usuário")
+        return True
     
     def create_recurring_rule(self, user_id: int, rule_data: dict) -> dict:
         """
@@ -381,13 +429,43 @@ class ObligationService:
             if rule_data.get('amount', 0) <= 0:
                 raise ValueError("Amount must be greater than zero")
             
+            if rule_data.get('type') not in ['PAYABLE', 'RECEIVABLE', 'TRANSFERENCIA']:
+                raise ValueError("Type must be PAYABLE, RECEIVABLE or TRANSFERENCIA")
+            
             if rule_data.get('frequency') not in ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']:
                 raise ValueError("Invalid frequency")
             
+            # Validar contas se fornecidas
+            from_account_id = rule_data.get('from_account_id')
+            to_account_id = rule_data.get('to_account_id')
+            
+            # Processar e validar campos de conta
+            for field_name, field_value, field_label in [
+                ('from_account_id', from_account_id, 'origem'), 
+                ('to_account_id', to_account_id, 'destino')
+            ]:
+                if field_value == '' or field_value == 'null' or field_value is None:
+                    if field_name == 'from_account_id':
+                        from_account_id = None
+                    else:
+                        to_account_id = None
+                elif field_value:
+                    try:
+                        account_id_int = int(field_value)
+                        self._validate_account_exists(cursor, account_id_int, user_id, field_label)
+                        if field_name == 'from_account_id':
+                            from_account_id = account_id_int
+                        else:
+                            to_account_id = account_id_int
+                    except (ValueError, TypeError) as e:
+                        if "não encontrada" in str(e):
+                            raise e
+                        raise ValueError(f"Conta {field_label} com valor inválido: {field_value}")
+            
             query = """
                 INSERT INTO recurring_rules 
-                (user_id, description, amount, type, category, entity_name, frequency, interval_value, start_date, end_date, is_active)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (user_id, description, amount, type, category, entity_name, frequency, interval_value, start_date, end_date, is_active, from_account_id, to_account_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             values = (
                 user_id,
@@ -400,7 +478,9 @@ class ObligationService:
                 rule_data.get('interval_value', 1),
                 rule_data.get('start_date'),
                 rule_data.get('end_date'),
-                rule_data.get('is_active', True)
+                rule_data.get('is_active', True),
+                from_account_id,
+                to_account_id
             )
             
             # Debug logging
@@ -485,10 +565,26 @@ class ObligationService:
         """
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
+            # Validar contas se fornecidas (não-None) antes de atualizar
+            for field_name in ['from_account_id', 'to_account_id']:
+                if field_name in rule_data:
+                    account_id = rule_data[field_name]
+                    field_label = "origem" if field_name == 'from_account_id' else "destino"
+                    print(f"UPDATE_RECURRING_RULE: Validating {field_name} = '{account_id}' (type: {type(account_id).__name__})")
+                    
+                    if account_id is not None and account_id != '' and str(account_id).lower() != 'null':
+                        try:
+                            account_id_int = int(account_id)
+                            self._validate_account_exists(cursor, account_id_int, user_id, field_label)
+                        except (ValueError, TypeError) as e:
+                            if "não encontrada" in str(e):
+                                raise e
+                            raise ValueError(f"Conta {field_label} com valor inválido: {account_id}")
+            
             fields = []
             values = []
             
-            allowed_fields = ['description', 'amount', 'category', 'entity_name', 'frequency', 'interval_value', 'start_date', 'end_date', 'is_active']
+            allowed_fields = ['description', 'amount', 'category', 'entity_name', 'frequency', 'interval_value', 'start_date', 'end_date', 'is_active', 'from_account_id', 'to_account_id']
             for field in allowed_fields:
                 if field in rule_data:
                     fields.append(f"{field} = %s")
@@ -496,6 +592,19 @@ class ObligationService:
                     value = rule_data[field]
                     if hasattr(value, 'isoformat'):  # É um objeto date/datetime
                         value = value.isoformat()
+                    # Tratar campos de conta: converter para int ou None
+                    elif field in ['from_account_id', 'to_account_id']:
+                        print(f"UPDATE_RECURRING_RULE: Processing {field} = '{value}' (type: {type(value).__name__})")
+                        if value is None or value == '' or str(value).lower() == 'null':
+                            value = None
+                            print(f"UPDATE_RECURRING_RULE: {field} set to None")
+                        else:
+                            try:
+                                value = int(value)
+                                print(f"UPDATE_RECURRING_RULE: {field} converted to {value}")
+                            except (ValueError, TypeError):
+                                print(f"UPDATE_RECURRING_RULE: {field} invalid value '{value}', setting to None")
+                                value = None
                     values.append(value)
             
             if not fields:
@@ -521,11 +630,27 @@ class ObligationService:
             print(f"UPDATE_RECURRING_RULE: rowcount={cursor.rowcount}")
             
             if cursor.rowcount == 0:
-                # Verificar se a regra existe mas não pertence ao usuário
-                cursor.execute("SELECT user_id FROM recurring_rules WHERE id = %s", (rule_id,))
+                # Verificar se a regra existe e dar diagnóstico mais detalhado
+                cursor.execute("SELECT user_id, description, from_account_id, to_account_id FROM recurring_rules WHERE id = %s", (rule_id,))
                 existing_rule = cursor.fetchone()
                 if existing_rule:
-                    raise ValueError(f"Recurring rule exists but belongs to user_id {existing_rule['user_id']}, not {user_id}")
+                    if existing_rule['user_id'] == user_id:
+                        print(f"UPDATE_RECURRING_RULE: Rule found but no rows updated.")
+                        print(f"UPDATE_RECURRING_RULE: Current DB state - rule_id={rule_id}, user_id={user_id}")
+                        print(f"UPDATE_RECURRING_RULE: Current DB accounts - from: {existing_rule['from_account_id']}, to: {existing_rule['to_account_id']}")
+                        print(f"UPDATE_RECURRING_RULE: Update attempt - fields: {[f.split('=')[0].strip() for f in fields]}")
+                        print(f"UPDATE_RECURRING_RULE: Update values: {values}")
+                        print(f"UPDATE_RECURRING_RULE: Full query: {query}")
+                        
+                        # Tentar identificar o problema específico
+                        if len(values) < 2:
+                            raise ValueError("Insufficient parameters for update query")
+                        elif not any('account' in field for field in fields):
+                            raise ValueError("Account fields missing from update - this is the likely cause of the issue")
+                        else:
+                            raise ValueError(f"Update failed despite having {len(fields)} fields to update. Check data types and constraints.")
+                    else:
+                        raise ValueError(f"Recurring rule exists but belongs to user_id {existing_rule['user_id']}, not {user_id}")
                 else:
                     raise ValueError("Recurring rule not found")
             
@@ -658,18 +783,11 @@ class ObligationService:
             cursor.close()
             self.db_service.connection.autocommit = True
     
-    def liquidate_recurring_rule(self, user_id: int, rule_id: int, account_id: int, liquidation_date: date = None) -> dict:
+    def liquidate_recurring_rule(self, user_id: int, rule_id: int, from_account_id: int = None, to_account_id: int = None, settlement_date: date = None) -> dict:
         """
         FUNÇÃO CRÍTICA: Liquida uma recurring rule criando transação correspondente
         Diferente das obrigações, não marca a recurring rule como "liquidada" - ela continua ativa para próximas ocorrências
         """
-        if liquidation_date is None:
-            liquidation_date = date.today()
-        
-        # Debug logging
-        print(f"LIQUIDATE_RECURRING_RULE: user_id={user_id}, rule_id={rule_id}, account_id={account_id}")
-        print(f"LIQUIDATE_RECURRING_RULE: liquidation_date={liquidation_date}, type={type(liquidation_date)}")
-        
         cursor = self.db_service.connection.cursor(dictionary=True)
         
         try:
@@ -686,36 +804,66 @@ class ObligationService:
             if not rule:
                 raise ValueError("Recurring rule not found, not owned by user, or not active")
             
-            # 2. Validar conta
-            cursor.execute("""
-                SELECT id, name FROM accounts 
-                WHERE id = %s AND user_id = %s
-            """, (account_id, user_id))
+            # 1.2. Calcular data de liquidação automática se não fornecida
+            if settlement_date is None:
+                start_date = rule['start_date']
+                if isinstance(start_date, str):
+                    start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+                settlement_date = calculate_suggested_settlement_date(start_date)
+        
+            # Debug logging
+            print(f"LIQUIDATE_RECURRING_RULE: user_id={user_id}, rule_id={rule_id}, from_account_id={from_account_id}")
+            print(f"LIQUIDATE_RECURRING_RULE: settlement_date={settlement_date}, type={type(settlement_date)}")
+            print(f"LIQUIDATE_RECURRING_RULE: calculated from start_date={rule['start_date']}")
             
-            account = cursor.fetchone()
-            if not account:
-                raise ValueError("Account not found or not owned by user")
+            # 1.5. Usar contas pré-definidas na recurring rule se não foram fornecidas
+            if from_account_id is None:
+                from_account_id = rule.get('from_account_id')
+            if to_account_id is None:
+                to_account_id = rule.get('to_account_id')
+            
+            # 2. Validar contas (apenas se foram fornecidas)
+            if from_account_id:
+                cursor.execute("""
+                    SELECT id, name FROM accounts 
+                    WHERE id = %s AND user_id = %s
+                """, (from_account_id, user_id))
+                
+                account = cursor.fetchone()
+                if not account:
+                    raise ValueError("Conta origem não encontrada ou não pertence ao usuário")
+            
+            if to_account_id:
+                cursor.execute("""
+                    SELECT id, name FROM accounts 
+                    WHERE id = %s AND user_id = %s
+                """, (to_account_id, user_id))
+                
+                account = cursor.fetchone()
+                if not account:
+                    raise ValueError("Conta destino não encontrada ou não pertence ao usuário")
             
             # 3. Criar transação correspondente
             transaction_data = {
                 'description': f"Liquidação recorrência: {rule['description']}",
                 'amount': float(rule['amount']),
-                'transaction_date': liquidation_date,
+                'transaction_date': settlement_date,
                 'category': rule.get('category'),
                 'status': 'EFETIVADO'
             }
             
-            # Definir tipo e contas baseado no tipo da recurring rule
-            if rule['type'] == 'PAYABLE':
-                # A Pagar = DESPESA (sai da conta)
-                transaction_data['type'] = 'DESPESA'
-                transaction_data['from_account_id'] = account_id
-                transaction_data['to_account_id'] = None
-            else:
-                # A Receber = RECEITA (entra na conta)  
+            # Definir tipo e contas baseado no tipo da obrigação
+            if from_account_id and to_account_id:
+                transaction_data['type'] = 'TRANSFERENCIA'
+            elif to_account_id:
                 transaction_data['type'] = 'RECEITA'
-                transaction_data['from_account_id'] = None
-                transaction_data['to_account_id'] = account_id
+            elif from_account_id:
+                transaction_data['type'] = 'DESPESA'
+            else:
+                raise ValueError("Conta de origem ou destino obrigatórias para liquidar uma obrigação")
+            
+            transaction_data['from_account_id'] = from_account_id
+            transaction_data['to_account_id'] = to_account_id
             
             # Criar transação usando o transaction_service (passa cursor externo)
             new_transaction = self.transaction_service.create_transaction(user_id, transaction_data, cursor)
@@ -724,7 +872,7 @@ class ObligationService:
             obligation_data = {
                 'description': f"Liquidação: {rule['description']}",
                 'amount': float(rule['amount']),
-                'due_date': liquidation_date,
+                'due_date': settlement_date,
                 'type': rule['type'],
                 'status': 'PAID',
                 'category': rule.get('category'),
@@ -774,7 +922,7 @@ class ObligationService:
                 'rule_id': rule_id,
                 'transaction_id': new_transaction['id'],
                 'obligation_id': obligation_id,
-                'liquidation_date': liquidation_date.isoformat()
+                'settlement_date': settlement_date.isoformat()
             }
             
         except Exception as e:
@@ -862,7 +1010,7 @@ class ObligationService:
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
             # LOG DE VERIFICAÇÃO CRÍTICO
-            print(f"OBLIGATION_SERVICE: Starting summary calculation for user_id={user_id}")
+            # print(f"OBLIGATION_SERVICE: Starting summary calculation for user_id={user_id}")
             
             # 1. Obrigações do mês atual
             cursor.execute("""
@@ -899,8 +1047,8 @@ class ObligationService:
             recurring_result = cursor.fetchone()
             
             # LOG DE VERIFICAÇÃO CRÍTICO  
-            print(f"OBLIGATION_SERVICE: Obligations result: {obligations_result}")
-            print(f"OBLIGATION_SERVICE: Recurring result: {recurring_result}")
+            # print(f"OBLIGATION_SERVICE: Obligations result: {obligations_result}")
+            # print(f"OBLIGATION_SERVICE: Recurring result: {recurring_result}")
             
             # Conversão segura e soma dos totais
             obligations_payable = float(obligations_result['payable_total']) if obligations_result and obligations_result['payable_total'] else 0.0
@@ -919,7 +1067,7 @@ class ObligationService:
             }
             
             # LOG DE VERIFICAÇÃO CRÍTICO
-            print(f"OBLIGATION_SERVICE: Final summary data: {summary_data}")
+            # print(f"OBLIGATION_SERVICE: Final summary data: {summary_data}")
             
             return summary_data
             

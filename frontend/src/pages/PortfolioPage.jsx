@@ -1063,7 +1063,7 @@ export function PortfolioPage() {
       <Card withBorder>
         <ScrollArea style={{ height: 'calc(100vh - 400px)', minHeight: '400px' }}>
           <Table striped highlightOnHover stickyHeader>
-          <Table.Thead style={{ position: 'sticky', top: 0, zIndex: 1, backgroundColor: 'white' }}>
+          <Table.Thead style={{ position: 'sticky', top: 0, zIndex: 1, backgroundColor: '#404040ff' }}>
             <Table.Tr>
               <Table.Th>
                 <SortableHeader 

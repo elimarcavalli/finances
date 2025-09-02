@@ -154,37 +154,92 @@ class TransactionService:
     
     def update_transaction(self, user_id: int, transaction_id: int, transaction_data: dict) -> dict:
         """
-        Atualiza uma transação existente.
-        AVISO: Esta operação é complexa pois precisa reverter o efeito da transação original
-        e aplicar o efeito da nova transação nos saldos das contas.
-        Para o MVP, recomenda-se focar apenas em criar e listar.
+        Atualiza uma transação existente de forma completa e segura.
+        Permite atualização de todos os campos mantendo integridade dos dados.
         """
-        # Implementação complexa - reverter efeito original + aplicar novo efeito
-        # Por ora, implementação simples sem atualização de saldos
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
+            self.db_service.connection.autocommit = False
+            
+            # 1. Verificar se a transação existe e pertence ao usuário
+            cursor.execute("""
+                SELECT * FROM transactions 
+                WHERE id = %s AND user_id = %s
+            """, (transaction_id, user_id))
+            
+            current_transaction = cursor.fetchone()
+            if not current_transaction:
+                raise Exception("Transação não encontrada ou não pertence ao usuário")
+            
+            # 2. Processar campos para atualização
             fields = []
             values = []
             
-            # Campos permitidos para atualização simples (sem mudança de valores/contas)
-            simple_fields = ['description', 'category']
-            for field in simple_fields:
+            # Campos permitidos para atualização
+            allowed_fields = [
+                'description', 'amount', 'transaction_date', 'type', 
+                'category', 'from_account_id', 'to_account_id'
+            ]
+            
+            
+            for field in allowed_fields:
                 if field in transaction_data:
+                    value = transaction_data[field]
+                    
+                    # Tratamento especial para campos de conta (podem ser None/null)
+                    if field in ['from_account_id', 'to_account_id']:
+                        if value == '' or value == 'null' or value is None:
+                            value = None
+                        elif value:
+                            try:
+                                value = int(value)
+                                # Validar se a conta existe e pertence ao usuário
+                                cursor.execute("SELECT id FROM accounts WHERE id = %s AND user_id = %s", (value, user_id))
+                                if not cursor.fetchone():
+                                    field_label = "origem" if field == 'from_account_id' else "destino"
+                                    raise Exception(f"Conta {field_label} não encontrada ou não pertence ao usuário")
+                            except (ValueError, TypeError) as e:
+                                if "não encontrada" not in str(e):
+                                    raise Exception(f"Valor inválido para {field}: {value}")
+                                raise e
+                    
                     fields.append(f"{field} = %s")
-                    values.append(transaction_data[field])
+                    values.append(value)
             
             if not fields:
-                raise Exception("Apenas descrição e categoria podem ser atualizadas no MVP")
+                raise Exception("Nenhum campo válido fornecido para atualização")
             
+            # 3. Validar regras de negócio baseadas no tipo (se o tipo está sendo atualizado)
+            final_type = transaction_data.get('type', current_transaction['type'])
+            final_from_account = transaction_data.get('from_account_id', current_transaction['from_account_id'])
+            final_to_account = transaction_data.get('to_account_id', current_transaction['to_account_id'])
+            
+            # Converter None/null para validação
+            if final_from_account == '' or final_from_account == 'null':
+                final_from_account = None
+            if final_to_account == '' or final_to_account == 'null':  
+                final_to_account = None
+                
+            if final_type == 'RECEITA' and not final_to_account:
+                raise Exception("Conta de destino é obrigatória para receitas")
+            elif final_type == 'DESPESA' and not final_from_account:
+                raise Exception("Conta de origem é obrigatória para despesas")  
+            elif final_type == 'TRANSFERENCIA':
+                if not final_from_account or not final_to_account:
+                    raise Exception("Contas de origem e destino são obrigatórias para transferências")
+                if final_from_account == final_to_account:
+                    raise Exception("Conta de origem e destino devem ser diferentes")
+            
+            # 4. Executar a atualização
             values.extend([transaction_id, user_id])
             query = f"UPDATE transactions SET {', '.join(fields)} WHERE id = %s AND user_id = %s"
-            
             cursor.execute(query, values)
-            self.db_service.connection.commit()
             
             if cursor.rowcount == 0:
-                raise Exception("Transação não encontrada ou não pertence ao usuário")
+                raise Exception("Transação não foi atualizada - verifique se existe e pertence ao usuário")
             
+            # 5. Commit e retornar transação atualizada
+            self.db_service.connection.commit()
             return self.get_transaction_by_id(user_id, transaction_id)
             
         except Exception as err:
@@ -192,16 +247,21 @@ class TransactionService:
             raise Exception(f"Erro ao atualizar transação: {err}")
         finally:
             cursor.close()
+            self.db_service.connection.autocommit = True
     
-    def delete_transaction(self, user_id: int, transaction_id: int) -> bool:
+    def delete_transaction(self, user_id: int, transaction_id: int, external_cursor=None, skip_asset_check=False) -> bool:
         """
+        PHASE 3: Deleta uma transação com integridade de bens físicos.
         Deleta uma transação e reverte obrigações vinculadas para PENDING.
-        FUNÇÃO CRÍTICA: Garante integridade referencial com obrigações.
+        FUNÇÃO CRÍTICA: Garante integridade referencial com obrigações e bens físicos.
         """
-        cursor = self.db_service.connection.cursor(dictionary=True)
+        cursor = external_cursor or self.db_service.connection.cursor(dictionary=True)
+        own_transaction = external_cursor is None
+        
         try:
-            # Iniciar transação ACID
-            self.db_service.connection.autocommit = False
+            # Iniciar transação ACID apenas se gerenciando própria conexão
+            if own_transaction:
+                self.db_service.connection.autocommit = False
             
             # 1. Verificar se a transação existe e pertence ao usuário
             cursor.execute("""
@@ -211,8 +271,36 @@ class TransactionService:
             
             transaction = cursor.fetchone()
             if not transaction:
-                self.db_service.connection.rollback()
+                if own_transaction:
+                    self.db_service.connection.rollback()
                 return False
+                
+            # PHASE 3: 2. Verificar se a transação está vinculada a um bem físico
+            if not skip_asset_check:
+                cursor.execute("""
+                    SELECT id, description, status FROM physical_assets 
+                    WHERE acquisition_transaction_id = %s OR liquidation_transaction_id = %s
+                """, (transaction_id, transaction_id))
+                
+                linked_asset = cursor.fetchone()
+                if linked_asset:
+                    # Determinar o tipo de transação vinculada
+                    cursor.execute("""
+                        SELECT acquisition_transaction_id, liquidation_transaction_id FROM physical_assets 
+                        WHERE id = %s
+                    """, (linked_asset['id'],))
+                    
+                    asset_transactions = cursor.fetchone()
+                    
+                    if asset_transactions['acquisition_transaction_id'] == transaction_id:
+                        # É uma transação de aquisição - IMPEDIR EXCLUSÃO
+                        raise Exception(f"Esta transação está vinculada à aquisição do bem '{linked_asset['description']}'. Para removê-la, exclua o bem diretamente na tela de Patrimônio.")
+                    
+                    elif asset_transactions['liquidation_transaction_id'] == transaction_id:
+                        # É uma transação de liquidação - REVERTER LIQUIDAÇÃO
+                        from .physical_asset_service import PhysicalAssetService
+                        physical_asset_service = PhysicalAssetService(self.db_service)
+                        physical_asset_service.revert_liquidation(linked_asset['id'])
             
             # 2. Buscar obrigações vinculadas a esta transação
             cursor.execute("""
@@ -243,21 +331,24 @@ class TransactionService:
                         """, (obligation['id'], user_id))
                         print(f"TRANSACTION_SERVICE: Normal obligation {obligation['id']} ({obligation['description']}) reverted to PENDING")
             
-            # 4. Deletar a transação
+            # 3. Deletar a transação
             cursor.execute("""
                 DELETE FROM transactions 
                 WHERE id = %s AND user_id = %s
             """, (transaction_id, user_id))
             
-            # 5. Commit da transação ACID
-            self.db_service.connection.commit()
+            # 4. Commit da transação ACID apenas se gerenciando própria conexão
+            if own_transaction:
+                self.db_service.connection.commit()
             
             print(f"TRANSACTION_SERVICE: Transaction {transaction_id} deleted, {len(linked_obligations)} obligations reverted to PENDING")
             return cursor.rowcount > 0
             
         except Exception as err:
-            self.db_service.connection.rollback()
+            if own_transaction:
+                self.db_service.connection.rollback()
             raise Exception(f"Erro ao deletar transação e reverter obrigações: {err}")
         finally:
-            cursor.close()
-            self.db_service.connection.autocommit = True
+            if own_transaction:
+                cursor.close()
+                self.db_service.connection.autocommit = True

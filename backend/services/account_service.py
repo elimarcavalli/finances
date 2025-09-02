@@ -65,7 +65,7 @@ class AccountService:
             
             if initial_balance > 0:
                 logger.debug(f"[CREATE_ACCOUNT] Criando transação de saldo inicial de R$ {initial_balance} para conta {account_id}")
-                print(f"[ACCOUNT_SERVICE] Criando saldo inicial de R$ {initial_balance} para conta {account_id}")
+                # print(f"[ACCOUNT_SERVICE] Criando saldo inicial de R$ {initial_balance} para conta {account_id}")
 
                 transaction_data = {
                     'description': 'Saldo Inicial',
@@ -80,11 +80,11 @@ class AccountService:
 
                 # Chamar o transaction_service PASSANDO O CURSOR ATUAL
                 transaction_service.create_transaction(user_id, transaction_data, external_cursor=cursor)
-                print(f"[ACCOUNT_SERVICE] Transação de saldo inicial adicionada à operação.")
+                # print(f"[ACCOUNT_SERVICE] Transação de saldo inicial adicionada à operação.")
 
             # 3. Commit da transação ATÔMICA
             self.db_service.connection.commit()
-            print(f"[ACCOUNT_SERVICE] Operação atômica concluída com sucesso para conta {account_id}.")
+            # print(f"[ACCOUNT_SERVICE] Operação atômica concluída com sucesso para conta {account_id}.")
 
             # É seguro chamar a função get aqui, pois a transação foi commitada
             return self.get_account_by_id(user_id, account_id)
@@ -111,6 +111,7 @@ class AccountService:
             query = "SELECT * FROM accounts WHERE id = %s AND user_id = %s"
             cursor.execute(query, (account_id, user_id))
             result = cursor.fetchone()
+            cursor.fetchall()  # Garante que não há resultados não lidos
             
             if not result:
                 return None
@@ -167,11 +168,12 @@ class AccountService:
             """, (account_id,))
             
             result = cursor.fetchone()
+            cursor.fetchall()  # Garante que não há resultados não lidos
             cursor.close()
             
             balance = float(result['balance']) if result and result['balance'] is not None else 0.00
             
-            print(f"[ACCOUNT_SERVICE] Saldo custo aquisição carteira {account_id}: R$ {balance}")
+            # print(f"[ACCOUNT_SERVICE] Saldo custo aquisição carteira {account_id}: R$ {balance}")
             return balance
             
         except Exception as e:
@@ -197,6 +199,7 @@ class AccountService:
             """, (account_id, account_id, account_id, account_id))
             
             result = cursor.fetchone()
+            cursor.fetchall()  # Garante que não há resultados não lidos
             cursor.close()
             
             return float(result[0]) if result and result[0] is not None else 0.00

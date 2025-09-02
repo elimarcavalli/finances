@@ -258,7 +258,7 @@ export function AssetsPage() {
     
     // Circuit Breaker: contador de erros consecutivos
     let consecutiveErrors = 0;
-    const MAX_CONSECUTIVE_ERRORS = 10;
+    const MAX_CONSECUTIVE_ERRORS = 5;
     
     try {
       // Buscar todos os assets da classe específica primeiro
@@ -300,14 +300,14 @@ export function AssetsPage() {
             consecutiveErrors = 0; // Reset contador em caso de sucesso
             
             // Mostrar progresso a cada 5 sucessos ou no final
-            if (successCount % 5 === 0 || i === targetAssets.length - 1) {
+            // if (successCount % 5 === 0) {
               notifications.show({
                 title: 'Progresso',
                 message: `${successCount}/${targetAssets.length} ações atualizadas com sucesso`,
                 color: 'blue',
                 autoClose: 2000
               });
-            }
+            // }
           } else {
             consecutiveErrors++;
             totalErrors.push(`${asset.symbol}: ${response.data.error || 'Erro desconhecido'}`);
@@ -625,7 +625,7 @@ export function AssetsPage() {
         </Group>
       </Group>
 
-      <div className="page-table-container">
+      <div className="page-table-container" style={{ height: 'calc(100vh - 164px)', overflow: 'auto' }}>
         <AdvancedTable
           data={assets}
           columns={columns}

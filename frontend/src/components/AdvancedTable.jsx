@@ -441,7 +441,7 @@ export function AdvancedTable({
       <div className="advanced-table-content">
         <ScrollArea className="advanced-table-scroll">
           <Table striped highlightOnHover>
-          <Table.Thead style={{ position: 'sticky', top: 0, zIndex: 1, backgroundColor: '#4040401b' }}> 
+          <Table.Thead style={{ position: 'sticky', top: 0, zIndex: 1, backgroundColor: '#404040ff' }}> 
             <Table.Tr>
               {columns.map((column) => (
                 <Table.Th key={column.accessor} ta={column.align || 'left'}>

@@ -30,7 +30,7 @@ import {
   LineChart,
   Line
 } from 'recharts';
-import { IconTrendingUp, IconTrendingDown, IconWallet, IconCoins, IconCash, IconAlertCircle, IconPigMoney, IconReceiptTax, IconCalendarEvent, IconReceipt, IconCurrencyDollar, IconSortAscending, IconSortDescending } from '@tabler/icons-react';
+import { IconTrendingUp, IconTrendingDown, IconWallet, IconCoins, IconCash, IconAlertCircle, IconPigMoney, IconReceiptTax, IconCalendarEvent, IconReceipt, IconCurrencyDollar, IconSortAscending, IconSortDescending, IconBuildingWarehouse } from '@tabler/icons-react';
 import api from '../api';
 import { handleApiError } from '../utils/errorHandler';
 import { useSorting } from '../hooks/useSorting';
@@ -45,6 +45,7 @@ const ASSET_CLASS_LABELS = {
   'FUNDO': 'Fundos',
   'RENDA_FIXA': 'Renda Fixa',
   'COMMODITIES': 'Commodities',
+  'PATRIMONIO_FISICO': 'Patrimônio Físico',
   'OUTROS': 'Outros'
 };
 
@@ -235,6 +236,20 @@ export function DashboardPage() {
 
         <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
           <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #8b5cf6 0%, #7c3aed 100%)' }}>
+            <Group justify="space-between">
+              <div>
+                <Text c="white" size="xs" fw={500}>Bens Físicos</Text>
+                <Text c="white" size="lg" fw={700}>
+                  {formatCurrency(dashboardData?.totalPhysicalAssets || 0)}
+                </Text>
+              </div>
+              <IconBuildingWarehouse size={32} color="white" style={{ opacity: 0.8 }} />
+            </Group>
+          </Card>
+        </Grid.Col>
+
+        <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
+          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #10b981 0%, #059669 100%)' }}>
             <Group justify="space-between">
               <div>
                 <Text c="white" size="xs" fw={500}>A Receber (MÊS ATUAL)</Text>

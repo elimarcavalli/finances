@@ -18,6 +18,7 @@ import {
   IconHexagons,
   IconBuildingBank,
   IconZoomCode,
+  IconBuildingWarehouse,
   IconTargetArrow,
   IconPigMoney,
   IconReceiptTax
@@ -102,6 +103,7 @@ export function MainLayout() {
         {/* Patrimônio */}
         <NavLink label="Patrimônio" leftSection={<IconCoins size="1rem" />} defaultOpened>
           <NavLink label="Portfólio" leftSection={<IconChartPie size="1rem" />} component={Link} to="/portfolio" />
+          <NavLink label="Bens Físicos" leftSection={<IconBuildingWarehouse size="1rem" />} component={Link} to="/patrimonio" />
           <NavLink label="Contas" leftSection={<IconWallet size="1rem" />} component={Link} to="/accounts" />
           <NavLink label="Ativos" leftSection={<IconChartCandle size="1rem" />} component={Link} to="/assets" />
         </NavLink>
@@ -121,7 +123,7 @@ export function MainLayout() {
           <NavLink label="Carteiras Web3" leftSection={<IconWallet size="1rem" />} component={Link} to="/wallets" />
           <NavLink label="Strategy Vaults" leftSection={<IconLockOpen size="1rem" />} component={Link} to="/vaults" />
           <NavLink label="Estratégias" leftSection={<IconChartLine size="1rem" />} component={Link} to="/strategies" />
-          <NavLink label="Backtesting" leftSection={<IconHistory size="1rem" />} component={Link} to="/backtesting" />
+          <NavLink label="Backtesting com IA" leftSection={<IconHistory size="1rem" />} component={Link} to="/backtesting" />
         </NavLink>
 
         {/* DeFi - Futuras Funcionalidades */}

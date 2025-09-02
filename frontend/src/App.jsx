@@ -15,6 +15,7 @@ import { TransactionsPage } from './pages/TransactionsPage';
 import { AccountsReceivablePage } from './pages/AccountsReceivablePage';
 import { ObligationsPage } from './pages/ObligationsPage';
 import { PortfolioPage } from './pages/PortfolioPage';
+import { PatrimonioPage } from './pages/PatrimonioPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { ProtectedRoute } from './components/ProtectedRoute';
 
@@ -27,6 +28,7 @@ function App() {
           <Route index element={<DashboardPage />} />
           {/* Patrimônio */}
           <Route path="portfolio" element={<PortfolioPage />} />
+          <Route path="patrimonio" element={<PatrimonioPage />} />
           <Route path="accounts" element={<AccountsPage />} />
           <Route path="contas/:accountId" element={<AccountDetailsPage />} />
           <Route path="contas/cripto/:accountId" element={<CryptoAccountDetailsPage />} />

@@ -11,6 +11,7 @@ from services.price_service import PriceService
 from services.portfolio_service import PortfolioService
 from services.account_service import AccountService
 from services.obligation_service import ObligationService
+from services.physical_asset_service import PhysicalAssetService
 import mysql.connector
 
 
@@ -20,6 +21,7 @@ class SummaryService:
         self.price_service = PriceService()
         self.portfolio_service = PortfolioService(database_service, self.price_service)
         self.account_service = AccountService(database_service)
+        self.physical_asset_service = PhysicalAssetService(database_service)
         # Importação circular resolvida: instanciar apenas quando necessário
         self.obligation_service = None
 
@@ -50,9 +52,12 @@ class SummaryService:
             # 4. Calcular investmentCash - saldo em caixa de contas de investimento
             investment_cash = self._calculate_investment_cash(cursor, user_id)
             
-            # 5. Calcular netWorth usando nova fórmula
-            # netWorth = totalInvested + totalCash + investmentCash - totalLiabilities
-            net_worth = total_invested + total_cash + investment_cash - total_liabilities
+            # 5. Calcular totalPhysicalAssets - patrimônio físico
+            total_physical_assets = self.physical_asset_service.get_total_value(user_id)
+            
+            # 6. Calcular netWorth usando nova fórmula incluindo patrimônio físico
+            # netWorth = totalInvested + totalCash + investmentCash + totalPhysicalAssets - totalLiabilities
+            net_worth = total_invested + total_cash + investment_cash + total_physical_assets - total_liabilities
             
             # 6. Calcular assetAllocation
             asset_allocation = self._calculate_asset_allocation(cursor, user_id, total_invested)
@@ -83,6 +88,7 @@ class SummaryService:
                 "totalCash": float(total_cash),
                 "totalLiabilities": float(total_liabilities),
                 "investmentCash": float(investment_cash),
+                "totalPhysicalAssets": float(total_physical_assets),
                 "assetAllocation": asset_allocation,
                 "accountSummary": account_summary,
                 "cryptoPortfolio": crypto_portfolio,
@@ -411,8 +417,11 @@ class SummaryService:
             # Calcular valor total do portfólio de ativos
             total_invested = self.portfolio_service.get_total_portfolio_value(user_id)
             
+            # Calcular patrimônio físico
+            total_physical_assets = self.physical_asset_service.get_total_value(user_id)
+            
             # Calcular patrimônio líquido total
-            total_net_worth = total_invested + total_cash + investment_cash - total_liabilities
+            total_net_worth = total_invested + total_cash + investment_cash + total_physical_assets - total_liabilities
             
             # Inserir ou atualizar snapshot na tabela
             cursor.execute("""

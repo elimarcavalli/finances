@@ -1,8 +1,13 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Request, Query
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.exceptions import RequestValidationError
+from api.chart_routes import router as chart_router
+from api.optimization_routes import router as optimization_router
+from api.historical_data_routes import router as historical_data_router
+from api.datafeed_routes import router as datafeed_router
+from middleware.error_handler import ErrorHandlerMiddleware
 from services.blockchain_service import BlockchainService
 from services.database_service import DatabaseService
 from services.auth_service import create_access_token, get_current_user, get_password_hash, verify_password, ACCESS_TOKEN_EXPIRE_MINUTES
@@ -16,7 +21,10 @@ from services.wallet_sync_service import WalletSyncService
 from services.portfolio_service import PortfolioService
 from services.obligation_service import ObligationService
 from services.reports_service import ReportsService
-from pydantic import BaseModel
+from services.optimization_service import OptimizationService
+from services.physical_asset_service import PhysicalAssetService
+from pydantic import BaseModel, Field
+from decimal import Decimal
 from typing import Optional, List
 from datetime import date, datetime
 import json
@@ -28,7 +36,33 @@ import time
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+# Cria a instância principal da aplicação
+app = FastAPI(
+    title="Trading System API",
+    description="API para gerenciar backtesting, estratégias e visualização de gráficos.",
+    version="1.0.0"
+)
+
+# Inclui o roteador de gráficos na aplicação principal
+# Todas as rotas definidas em chart_routes terão o prefixo /charts
+app.include_router(chart_router, prefix="/charts", tags=["Charts"])
+
+# Inclui o roteador de otimização
+# Todas as rotas definidas em optimization_routes terão o prefixo /optimization
+app.include_router(optimization_router, prefix="/strategy-optimization", tags=["Optimization"])
+
+# Inclui o roteador de dados históricos
+# Todas as rotas definidas em historical_data_routes terão o prefixo /historical-data
+app.include_router(historical_data_router, prefix="/historical-data", tags=["Historical Data"])
+
+# Inclui o roteador de datafeed para TradingView
+# Todas as rotas definidas em datafeed_routes terão o prefixo /datafeed
+app.include_router(datafeed_router, prefix="/datafeed", tags=["TradingView Datafeed"])
+
+@app.get("/", tags=["Root"])
+async def read_root():
+    """Endpoint inicial para verificar se a API está no ar."""
+    return {"message": "Finances.mine Online!"}
 
 # Global Exception Handler - Melhorado com mais detalhes
 @app.exception_handler(Exception)
@@ -116,6 +150,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         },
     )
 
+# Add error handling middleware first (executes last in chain)
+app.add_middleware(ErrorHandlerMiddleware)
+
 # Middleware de debug para CORS
 @app.middleware("http")
 async def debug_cors(request: Request, call_next):
@@ -162,6 +199,7 @@ wallet_sync_service = WalletSyncService(database_service)
 # Importar price_service para o portfolio_service
 from services.price_service import PriceService
 price_service = PriceService(database_service)
+physical_asset_service = PhysicalAssetService(database_service)
 portfolio_service = PortfolioService(database_service, price_service)
 obligation_service = ObligationService(database_service, transaction_service)
 reports_service = ReportsService(database_service)
@@ -190,7 +228,7 @@ class FinancialObligationUpdate(BaseModel):
 class RecurringRuleCreate(BaseModel):
     description: str
     amount: float
-    type: str  # PAYABLE, RECEIVABLE
+    type: str  # PAYABLE, RECEIVABLE, TRANSFERENCIA
     category: Optional[str] = None
     entity_name: Optional[str] = None
     frequency: str  # DAILY, WEEKLY, MONTHLY, YEARLY
@@ -198,6 +236,8 @@ class RecurringRuleCreate(BaseModel):
     start_date: date
     end_date: Optional[date] = None
     is_active: bool = True
+    from_account_id: Optional[int] = None
+    to_account_id: Optional[int] = None
 
 class RecurringRuleUpdate(BaseModel):
     description: Optional[str] = None
@@ -209,9 +249,12 @@ class RecurringRuleUpdate(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_active: Optional[bool] = None
+    from_account_id: Optional[int] = None
+    to_account_id: Optional[int] = None
 
 class SettleObligationRequest(BaseModel):
-    account_id: int
+    from_account_id: Optional[int] = None
+    to_account_id: Optional[int] = None
     settlement_date: Optional[date] = None
 
 class ObligationsSummaryResponse(BaseModel):
@@ -251,6 +294,44 @@ class RecurringRuleResponse(BaseModel):
     is_active: bool
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    from_account_id: Optional[int] = None
+    to_account_id: Optional[int] = None
+
+class PhysicalAssetCreate(BaseModel):
+    asset_id: int
+    description: str
+    acquisition_date: date
+    acquisition_cost: Decimal = Field(..., max_digits=20, decimal_places=2)
+    current_value: Decimal = Field(..., max_digits=20, decimal_places=2)
+    last_valuation_date: date
+    notes: Optional[str] = None
+    source_account_id: int  # ID da conta de onde o dinheiro saiu
+
+class PhysicalAssetUpdate(PhysicalAssetCreate):
+    pass
+
+class PhysicalAssetResponse(BaseModel):
+    id: int
+    user_id: int
+    asset_id: int
+    description: str
+    acquisition_date: date
+    acquisition_cost: Decimal = Field(..., max_digits=20, decimal_places=2)
+    current_value: Decimal = Field(..., max_digits=20, decimal_places=2)
+    last_valuation_date: date
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+    asset_class_name: str
+    # PHASE 3: Novos campos
+    status: str
+    acquisition_transaction_id: Optional[int] = None
+    liquidation_transaction_id: Optional[int] = None
+    asset_icon_url: Optional[str] = None
+
+class LiquidatePhysicalAssetRequest(BaseModel):
+    sale_value: Decimal = Field(..., max_digits=20, decimal_places=2)
+    destination_account_id: int
+    sale_date: date
 
 class RecurringRulesListResponse(BaseModel):
     rules: List[RecurringRuleResponse]
@@ -436,6 +517,53 @@ class WalletAccountCreate(BaseModel):
     public_address: str
     wallet_name: str
 
+# === OPTIMIZATION PYDANTIC MODELS ===
+
+class OptimizationJobCreate(BaseModel):
+    base_strategy_name: str
+    asset_id: int
+    timeframe: str  # '1d', '4h', '1h', etc.
+    start_date: date
+    end_date: date
+    parameter_ranges: dict  # JSON with parameter ranges for optimization
+
+class OptimizationJobResponse(BaseModel):
+    id: int
+    user_id: int
+    base_strategy_name: str
+    asset_id: int
+    asset_symbol: Optional[str] = None
+    asset_name: Optional[str] = None
+    timeframe: str
+    start_date: date
+    end_date: date
+    parameter_ranges: dict
+    status: str
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+class OptimizationJobsListResponse(BaseModel):
+    jobs: List[OptimizationJobResponse]
+
+class OptimizationResult(BaseModel):
+    id: int
+    job_id: int
+    parameters: dict
+    total_trades: int
+    win_rate_percent: float
+    net_profit_percent: float
+    max_drawdown_percent: float
+    sharpe_ratio: float
+    fitness_score: float
+    created_at: datetime
+
+class OptimizationResultsResponse(BaseModel):
+    results: List[OptimizationResult]
+
+class BestParametersResponse(BaseModel):
+    parameters: dict
+    performance_metrics: dict
+
 @app.get("/")
 async def root():
     return {"message": "Crypto Bot Backend is running"}
@@ -538,8 +666,11 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
                     headers={"WWW-Authenticate": "Bearer"},
                 )
             
-            # Fechar cursor e criar novo para a segunda query
+            # Consumir todos os resultados restantes e fechar cursor
+            cursor.fetchall()  # Garante que não há resultados não lidos
             cursor.close()
+            
+            # Criar novo cursor para a segunda query
             cursor = database_service.connection.cursor()
             
             # Segunda query: atualizar last_login
@@ -799,6 +930,7 @@ async def get_account_by_address(public_address: str, current_user: dict = Depen
         """, (user_id, public_address))
         
         account = cursor.fetchone()
+        cursor.fetchall()  # Garante que não há resultados não lidos
         cursor.close()
         
         if not account:
@@ -1321,6 +1453,68 @@ async def delete_transaction(transaction_id: int, current_user: dict = Depends(g
         if not success:
             raise HTTPException(status_code=404, detail="Transaction not found")
         return {"message": "Transaction deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# === PHYSICAL ASSETS ENDPOINTS ===
+@app.post("/physical-assets", response_model=PhysicalAssetResponse)
+async def create_physical_asset(asset_data: PhysicalAssetCreate, current_user: dict = Depends(get_current_user)):
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        new_asset = physical_asset_service.create_physical_asset(user_id, asset_data.model_dump())
+        return new_asset
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/physical-assets", response_model=List[PhysicalAssetResponse])
+async def list_physical_assets(status: Optional[str] = Query(None, description="Filter by status: ATIVO or VENDIDO"), current_user: dict = Depends(get_current_user)):
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        assets = physical_asset_service.get_physical_assets_by_user(user_id, status_filter=status)
+        return assets
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/physical-assets/{physical_asset_id}", response_model=PhysicalAssetResponse)
+async def update_physical_asset(physical_asset_id: int, asset_data: PhysicalAssetUpdate, current_user: dict = Depends(get_current_user)):
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        updated_asset = physical_asset_service.update_physical_asset(user_id, physical_asset_id, asset_data.model_dump())
+        return updated_asset
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/physical-assets/{physical_asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_physical_asset(physical_asset_id: int, current_user: dict = Depends(get_current_user)):
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        physical_asset_service.delete_physical_asset(user_id, physical_asset_id)
+        return
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/physical-assets/{physical_asset_id}/liquidate")
+async def liquidate_physical_asset(physical_asset_id: int, liquidation_data: LiquidatePhysicalAssetRequest, current_user: dict = Depends(get_current_user)):
+    """Liquidar (vender) um bem físico registrando a receita correspondente"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        result = physical_asset_service.liquidate_physical_asset(user_id, physical_asset_id, liquidation_data.model_dump())
+        return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1922,7 +2116,8 @@ async def settle_obligation(
         settlement_result = obligation_service.settle_obligation(
             user_id=user_id,
             obligation_id=obligation_id,
-            account_id=settle_data.account_id,
+            from_account_id=settle_data.from_account_id,
+            to_account_id=settle_data.to_account_id,
             settlement_date=settle_data.settlement_date
         )
         return settlement_result
@@ -2005,8 +2200,15 @@ async def update_recurring_rule(
     
     try:
         raw_data = rule.model_dump()
-        # Filtrar apenas valores None, mas manter strings vazias e zeros
-        rule_data = {k: v for k, v in raw_data.items() if v is not None}
+        # Filtrar apenas valores None, mas manter strings vazias, zeros e campos de conta (que podem ser None para limpar)
+        rule_data = {}
+        for k, v in raw_data.items():
+            # Para campos de conta, permitir None (para limpar) e incluir no update
+            if k in ['from_account_id', 'to_account_id']:
+                rule_data[k] = v
+            # Para outros campos, filtrar apenas se não for None
+            elif v is not None:
+                rule_data[k] = v
         
         # Debug logging
         print(f"UPDATE_RECURRING_RULE_ENDPOINT: rule_id={rule_id}, user_id={user_id}")
@@ -2053,8 +2255,9 @@ async def liquidate_recurring_rule(
         liquidation_result = obligation_service.liquidate_recurring_rule(
             user_id=user_id,
             rule_id=rule_id,
-            account_id=liquidation_data.account_id,
-            liquidation_date=liquidation_data.settlement_date
+            from_account_id=liquidation_data.from_account_id,
+            to_account_id=liquidation_data.to_account_id,
+            settlement_date=liquidation_data.settlement_date
         )
         return liquidation_result
     except Exception as e:
@@ -2170,7 +2373,8 @@ async def update_stock_price(asset_id: int, current_user: dict = Depends(get_cur
                 "symbol": result["symbol"],
                 "price_brl": result["price_brl"],
                 "updated_at": result["updated_at"],
-                "asset": result["asset"]
+                "asset": result["asset"],
+                "success": 1
             }
         else:
             error_detail = result["error"]
@@ -2572,6 +2776,134 @@ async def get_cash_flow_kpis(
     except Exception as e:
         logger.error(f"Error fetching cash flow KPIs: {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao buscar KPIs de fluxo de caixa: {str(e)}")
+
+# === ENDPOINTS PARA STRATEGY OPTIMIZATION ===
+
+@app.post("/strategy-optimization/jobs", response_model=OptimizationJobResponse)
+async def create_optimization_job(
+    job_data: OptimizationJobCreate, 
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Criar um novo job de otimização de estratégia"""
+    try:
+        database_service = DatabaseService()
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        optimization_service = OptimizationService()
+        job = optimization_service.create_optimization_job(
+            user_id=user_id, 
+            job_data=job_data.dict()
+        )
+        
+        # Iniciar otimização em background
+        background_tasks.add_task(
+            optimization_service.run_genetic_optimization,
+            job_id=job['id']
+        )
+        
+        return OptimizationJobResponse(**job)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating optimization job: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Erro ao criar job de otimização: {str(e)}")
+
+@app.get("/strategy-optimization/jobs", response_model=OptimizationJobsListResponse)
+async def list_optimization_jobs(current_user: dict = Depends(get_current_user)):
+    """Listar todos os jobs de otimização do usuário"""
+    try:
+        print(f"[/strategy-optimization/jobs] INICIO")
+
+        database_service = DatabaseService()
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        
+        print(f"[/strategy-optimization/jobs] user_id: {user_id}")
+
+        
+        optimization_service = OptimizationService()
+        jobs = optimization_service.get_optimization_jobs_by_user(user_id)
+        
+        print(f"[/strategy-optimization/jobs] FIM")
+        
+        job_responses = []
+        for job in jobs:
+            job_responses.append(OptimizationJobResponse(**job))
+        
+        return OptimizationJobsListResponse(jobs=job_responses)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing optimization jobs: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao listar jobs de otimização: {str(e)}")
+
+@app.get("/strategy-optimization/jobs/{job_id}", response_model=OptimizationJobResponse)
+async def get_optimization_job(job_id: int, current_user: dict = Depends(get_current_user)):
+    """Obter detalhes de um job de otimização específico"""
+    try:
+        database_service = DatabaseService()
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        optimization_service = OptimizationService()
+        job = optimization_service.get_optimization_job_by_id(job_id, user_id)
+        
+        if not job:
+            raise HTTPException(status_code=404, detail="Job de otimização não encontrado")
+        
+        return OptimizationJobResponse(**job)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching optimization job: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar job de otimização: {str(e)}")
+
+
+@app.get("/strategy-optimization/jobs/{job_id}/results", response_model=OptimizationResultsResponse)
+async def get_optimization_results(
+    job_id: int, 
+    limit: int = Query(default=100, le=1000),
+    current_user: dict = Depends(get_current_user)
+):
+    """Obter resultados de um job de otimização ordenados por fitness"""
+    try:
+        database_service = DatabaseService()
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        optimization_service = OptimizationService()
+        results = optimization_service.get_optimization_results(job_id, user_id, limit)
+        
+        result_responses = []
+        for result in results:
+            result_responses.append(OptimizationResult(**result))
+        
+        return OptimizationResultsResponse(results=result_responses)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching optimization results: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar resultados de otimização: {str(e)}")
+
+@app.get("/strategy-optimization/jobs/{job_id}/best-parameters", response_model=BestParametersResponse)
+async def get_best_parameters(job_id: int, current_user: dict = Depends(get_current_user)):
+    """Obter os melhores parâmetros encontrados para um job de otimização"""
+    try:
+        database_service = DatabaseService()
+        user_id = database_service.get_user_id_by_username(current_user['username'])
+        optimization_service = OptimizationService()
+        best_params = optimization_service.get_best_parameters(job_id, user_id)
+        
+        if not best_params:
+            raise HTTPException(status_code=404, detail="Nenhum resultado encontrado para este job")
+        
+        return BestParametersResponse(**best_params)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching best parameters: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar melhores parâmetros: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

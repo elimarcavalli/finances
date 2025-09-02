@@ -40,7 +40,8 @@ import {
   IconTrendingUp,
   IconTrendingDown,
   IconFilter,
-  IconChartPie
+  IconChartPie,
+  IconArrowRight
 } from '@tabler/icons-react';
 import api from '../api';
 import { AdvancedTable } from '../components/AdvancedTable';
@@ -67,12 +68,10 @@ export function ObligationsPage() {
   const [recurringModalOpened, setRecurringModalOpened] = useState(false);
   const [settleModalOpened, setSettleModalOpened] = useState(false);
   const [cancelModalOpened, setCancelModalOpened] = useState(false);
-  const [liquidateRuleModalOpened, setLiquidateRuleModalOpened] = useState(false);
   const [editingObligation, setEditingObligation] = useState(null);
   const [editingRule, setEditingRule] = useState(null);
-  const [settlingObligation, setSettlingObligation] = useState(null);
+  const [settlingItem, setSettlingItem] = useState(null); // Pode ser obligation ou recurring rule
   const [cancelingObligation, setCancelingObligation] = useState(null);
-  const [liquidatingRule, setLiquidatingRule] = useState(null);
   
   const [error, setError] = useState('');
 
@@ -104,33 +103,26 @@ export function ObligationsPage() {
       interval_value: 1,
       start_date: new Date(),
       end_date: null,
-      is_active: true
+      is_active: true,
+      from_account_id: '',
+      to_account_id: ''
     }
   });
 
   // Form para liquidação
   const settleForm = useForm({
     initialValues: {
-      account_id: '',
+      from_account_id: '',
+      to_account_id: '',
       settlement_date: null
     },
     validate: {
-      account_id: (value) => (!value ? 'Conta é obrigatória' : null),
+      from_account_id: (value, values) => (!value && !values.to_account_id ? 'Pelo menos uma conta é obrigatória' : null),
+      to_account_id: (value, values) => (!value && !values.from_account_id ? 'Pelo menos uma conta é obrigatória' : null),
       settlement_date: (value) => (!value ? 'Data de liquidação é obrigatória' : null)
     }
   });
 
-  // Form para liquidação de recurring rule
-  const liquidateRuleForm = useForm({
-    initialValues: {
-      account_id: '',
-      liquidation_date: null
-    },
-    validate: {
-      account_id: (value) => (!value ? 'Conta é obrigatória' : null),
-      liquidation_date: (value) => (!value ? 'Data de liquidação é obrigatória' : null)
-    }
-  });
 
   const loadObligations = useCallback(async () => {
     try {
@@ -288,8 +280,14 @@ export function ObligationsPage() {
         cleanedValues.end_date = null;
       }
       
-      // Debug: ver dados sendo enviados (remover em produção)
-      console.log('Recurring rule data being sent:', cleanedValues);
+      // Debug simplificado
+      console.log('Recurring rule update:', {
+        id: editingRule?.id,
+        accounts: {
+          from: cleanedValues.from_account_id,
+          to: cleanedValues.to_account_id
+        }
+      });
       
       if (editingRule) {
         await api.put(`/recurring-rules/${editingRule.id}`, cleanedValues);
@@ -315,12 +313,24 @@ export function ObligationsPage() {
       console.error('Recurring rule save error:', error.response?.data);
       
       let errorMessage = 'Erro ao salvar regra de recorrência';
-      if (error.response?.data?.detail) {
-        errorMessage = error.response.data.detail;
+      
+      // Tratamento específico para diferentes tipos de erro
+      if (error.response?.status === 400) {
+        if (error.response.data?.detail?.includes('Conta')) {
+          errorMessage = error.response.data.detail;
+        } else if (error.response.data?.detail?.includes('Update failed')) {
+          errorMessage = 'Falha na atualização. Verifique os dados e tente novamente.';
+        } else if (error.response.data?.detail) {
+          errorMessage = error.response.data.detail;
+        } else {
+          errorMessage = 'Dados inválidos. Verifique se todos os campos estão preenchidos corretamente.';
+        }
+      } else if (error.response?.status === 404) {
+        errorMessage = 'Regra de recorrência não encontrada';
+      } else if (error.response?.status === 401) {
+        errorMessage = 'Sessão expirada. Faça login novamente.';
       } else if (error.response?.data?.message) {
         errorMessage = error.response.data.message;
-      } else if (error.response?.status === 400) {
-        errorMessage = 'Dados inválidos. Verifique se todos os campos estão preenchidos corretamente.';
       }
       
       notifications.show({
@@ -333,43 +343,77 @@ export function ObligationsPage() {
     }
   };
 
-  const handleSettleObligation = async (values) => {
+  const handleSettleItem = async (values) => {
     try {
       setLoading(true);
       
-      // Formatar os dados corretamente
-      const formattedData = {
-        account_id: parseInt(values.account_id),
-        settlement_date: values.settlement_date instanceof Date 
-          ? values.settlement_date.toISOString().split('T')[0] 
-          : (values.settlement_date || new Date().toISOString().split('T')[0])
-      };
+      // Validações robustas
+      if (!values.from_account_id && !values.to_account_id) {
+        notifications.show({
+          title: 'Erro',
+          message: 'É obrigatório informar pelo menos uma conta (origem ou destino)',
+          color: 'red'
+        });
+        return;
+      }
       
-      // Debug: ver dados enviados (remover em produção)
+      if (!values.settlement_date) {
+        notifications.show({
+          title: 'Erro', 
+          message: 'Data de liquidação é obrigatória',
+          color: 'red'
+        });
+        return;
+      }
+      
+      // Formatar os dados corretamente - apenas enviar campos preenchidos
+      const formattedData = {};
+      
+      if (values.from_account_id) {
+        formattedData.from_account_id = parseInt(values.from_account_id);
+      }
+      
+      if (values.to_account_id) {
+        formattedData.to_account_id = parseInt(values.to_account_id);
+      }
+      
+      formattedData.settlement_date = values.settlement_date instanceof Date 
+        ? values.settlement_date.toISOString().split('T')[0] 
+        : (values.settlement_date || new Date().toISOString().split('T')[0]);
+      
+      // Detectar se é obligation ou recurring rule
+      const isRecurringRule = settlingItem.hasOwnProperty('frequency');
+      const endpoint = isRecurringRule 
+        ? `/recurring-rules/${settlingItem.id}/liquidate`
+        : `/obligations/${settlingItem.id}/settle`;
+      
       console.log('Settlement data:', formattedData);
+      console.log('Endpoint:', endpoint);
       
-      await api.post(`/obligations/${settlingObligation.id}/settle`, formattedData);
+      await api.post(endpoint, formattedData);
       
       notifications.show({
         title: 'Sucesso',
-        message: 'Obrigação liquidada com sucesso',
+        message: isRecurringRule ? 'Recorrência liquidada com sucesso' : 'Obrigação liquidada com sucesso',
         color: 'green'
       });
       
       setSettleModalOpened(false);
       settleForm.reset();
-      setSettlingObligation(null);
+      setSettlingItem(null);
       await loadData();
     } catch (error) {
       console.error('Settlement error:', error.response?.data);
       
-      let errorMessage = 'Erro ao liquidar obrigação';
+      let errorMessage = 'Erro ao liquidar';
       if (error.response?.data?.detail) {
         errorMessage = error.response.data.detail;
       } else if (error.response?.data?.message) {
         errorMessage = error.response.data.message;
       } else if (error.response?.status === 422) {
         errorMessage = 'Dados inválidos para liquidação. Verifique se todos os campos estão preenchidos corretamente.';
+      } else if (error.response?.status === 400) {
+        errorMessage = 'Dados inválidos. Verifique se as contas selecionadas são válidas.';
       }
       
       notifications.show({
@@ -418,51 +462,6 @@ export function ObligationsPage() {
   };
 
 
-  const handleLiquidateRecurringRule = async (values) => {
-    try {
-      setLoading(true);
-      
-      // Formatar os dados corretamente
-      const formattedData = {
-        account_id: parseInt(values.account_id),
-        liquidation_date: values.liquidation_date instanceof Date 
-          ? values.liquidation_date.toISOString().split('T')[0] 
-          : (values.liquidation_date || new Date().toISOString().split('T')[0])
-      };
-      
-      await api.post(`/recurring-rules/${liquidatingRule.id}/liquidate`, formattedData);
-      
-      notifications.show({
-        title: 'Sucesso',
-        message: 'Recorrência liquidada com sucesso',
-        color: 'green'
-      });
-      
-      setLiquidateRuleModalOpened(false);
-      liquidateRuleForm.reset();
-      setLiquidatingRule(null);
-      await loadData();
-    } catch (error) {
-      console.error('Liquidate recurring rule error:', error.response?.data);
-      
-      let errorMessage = 'Erro ao liquidar recorrência';
-      if (error.response?.data?.detail) {
-        errorMessage = error.response.data.detail;
-      } else if (error.response?.data?.message) {
-        errorMessage = error.response.data.message;
-      } else if (error.response?.status === 422) {
-        errorMessage = 'Dados inválidos para liquidação. Verifique se todos os campos estão preenchidos corretamente.';
-      }
-      
-      notifications.show({
-        title: 'Erro',
-        message: errorMessage,
-        color: 'red'
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
 
 
   const handleDeleteObligation = async (obligationId) => {
@@ -518,50 +517,113 @@ export function ObligationsPage() {
     recurringForm.setValues({
       ...rule,
       start_date: new Date(rule.start_date),
-      end_date: rule.end_date ? new Date(rule.end_date) : null
+      end_date: rule.end_date ? new Date(rule.end_date) : null,
+      from_account_id: rule.from_account_id ? rule.from_account_id.toString() : '',
+      to_account_id: rule.to_account_id ? rule.to_account_id.toString() : ''
     });
     setRecurringModalOpened(true);
   };
 
-  const openSettleModal = (obligation) => {
-    setSettlingObligation(obligation);
+  const openSettleModal = (item) => {
+    setSettlingItem(item);
+    
+    // Pré-popular contas se é recurring rule com contas definidas
+    const isRecurringRule = item.hasOwnProperty('frequency');
+    let fromAccountId = '';
+    let toAccountId = '';
+    let suggestedDate = null;
+    
+    if (isRecurringRule) {
+      // Usar contas pré-definidas da recurring rule
+      fromAccountId = item.from_account_id ? item.from_account_id.toString() : '';
+      toAccountId = item.to_account_id ? item.to_account_id.toString() : '';
+      
+      // Calcular data sugerida baseada na start_date
+      if (item.start_date) {
+        const startDate = new Date(item.start_date);
+        const today = new Date();
+        const suggestedDateObj = new Date(today.getFullYear(), today.getMonth(), startDate.getDate());
+        
+        // Se o dia não existe no mês atual, usar último dia do mês
+        if (suggestedDateObj.getMonth() !== today.getMonth()) {
+          suggestedDateObj.setDate(0); // Último dia do mês anterior (atual)
+        }
+        
+        suggestedDate = suggestedDateObj;
+      }
+    } else {
+      // Para obligations, usar due_date como base para data sugerida
+      if (item.due_date) {
+        const dueDate = new Date(item.due_date);
+        const today = new Date();
+        const suggestedDateObj = new Date(today.getFullYear(), today.getMonth(), dueDate.getDate());
+        
+        // Se o dia não existe no mês atual, usar último dia do mês
+        if (suggestedDateObj.getMonth() !== today.getMonth()) {
+          suggestedDateObj.setDate(0);
+        }
+        
+        suggestedDate = suggestedDateObj;
+      }
+    }
+    
     settleForm.setValues({
-      account_id: '',
-      settlement_date: null
+      from_account_id: fromAccountId,
+      to_account_id: toAccountId,
+      settlement_date: suggestedDate
     });
     setSettleModalOpened(true);
-  };
-
-  const openCancelModal = (obligation) => {
-    setCancelingObligation(obligation);
-    setCancelModalOpened(true);
-  };
-
-  const openLiquidateRuleModal = (rule) => {
-    setLiquidatingRule(rule);
-    liquidateRuleForm.setValues({
-      account_id: '',
-      liquidation_date: new Date()
-    });
-    setLiquidateRuleModalOpened(true);
   };
 
   const handleRevertSettlement = async (obligationId) => {
     if (!confirm('Tem certeza que deseja estornar esta liquidação?')) return;
     
-    setLoading(true);
+    // setLoading(true);
+    // try {
+    //   await api.post(`/obligations/${obligationId}/revert`);
+    //   notifications.show({
+    //     title: 'Sucesso',
+    //     message: 'Liquidação estornada com sucesso',
+    //     color: 'green'
+    //   });
+    //   await loadData();
+    // } catch (error) {
+    //   notifications.show({
+    //     title: 'Erro',
+    //     message: error.response?.data?.detail || 'Erro ao estornar liquidação',
+    //     color: 'red'
+    //   });
+    // } finally {
+    //   setLoading(false);
+    // }
+    
     try {
-      await api.post(`/obligations/${obligationId}/revert`);
+      setLoading(true);
+      
+      await api.delete(`/obligations/${obligationId}/cancel-settlement`);
+      
       notifications.show({
         title: 'Sucesso',
-        message: 'Liquidação estornada com sucesso',
+        message: 'Liquidação cancelada com sucesso',
         color: 'green'
       });
+      
+      setCancelModalOpened(false);
+      setCancelingObligation(null);
       await loadData();
     } catch (error) {
+      console.error('Cancel settlement error:', error.response?.data);
+      
+      let errorMessage = 'Erro ao cancelar liquidação';
+      if (error.response?.data?.detail) {
+        errorMessage = error.response.data.detail;
+      } else if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      }
+      
       notifications.show({
         title: 'Erro',
-        message: error.response?.data?.detail || 'Erro ao estornar liquidação',
+        message: errorMessage,
         color: 'red'
       });
     } finally {
@@ -609,11 +671,14 @@ export function ObligationsPage() {
   };
 
   const getTypeIcon = (type) => {
-    return type === 'PAYABLE' ? (
-      <IconCurrencyReal color="red" size={16} />
-    ) : (
-      <IconCurrencyReal color="green" size={16} />
-    );
+    if (type === 'PAYABLE') {
+      return <IconCurrencyReal color="red" size={16} />;
+    } else if (type === 'RECEIVABLE') {
+      return <IconCurrencyReal color="green" size={16} />;
+    } else if (type === 'TRANSFERENCIA') {
+      return <IconArrowRight color="blue" size={16} />;
+    }
+    return <IconCurrencyReal color="gray" size={16} />;
   };
 
   // Formatar moeda
@@ -831,10 +896,7 @@ export function ObligationsPage() {
           <ActionIcon
             variant="light"
             color="green"
-            onClick={() => {
-              setLiquidatingRule(row);
-              setLiquidateRuleModalOpened(true);
-            }}
+            onClick={() => openSettleModal(row)}
             title="Liquidar Próxima"
             size="sm"
           >
@@ -878,7 +940,19 @@ export function ObligationsPage() {
 
   const filteredObligations = obligations.filter(obligation => {
     if (activeTab === 'RECURRING') return false;
-    let matches = obligation.type === activeTab;
+    
+    let matches = false;
+    
+    if (activeTab === 'PAYABLE') {
+      // A Pagar: type = 'PAYABLE' E category != 'Cartão de Crédito'
+      matches = obligation.type === 'PAYABLE' && obligation.category !== 'Cartão de Crédito';
+    } else if (activeTab === 'CREDIT_CARD') {
+      // Faturas de Cartão: type = 'PAYABLE' E category = 'Cartão de Crédito'
+      matches = obligation.type === 'PAYABLE' && obligation.category === 'Cartão de Crédito';
+    } else if (activeTab === 'RECEIVABLE') {
+      // A Receber: type = 'RECEIVABLE' (sem alteração)
+      matches = obligation.type === 'RECEIVABLE';
+    }
     
     // Aplicar filtro de status se não for 'ALL'
     if (statusFilter !== 'ALL') {
@@ -961,6 +1035,7 @@ export function ObligationsPage() {
         onChange={setActiveTab}
         data={[
           { label: 'A Pagar', value: 'PAYABLE' },
+          { label: 'Faturas de Cartão', value: 'CREDIT_CARD' },
           { label: 'A Receber', value: 'RECEIVABLE' },
           { label: 'Recorrências', value: 'RECURRING' }
         ]}
@@ -1007,7 +1082,9 @@ export function ObligationsPage() {
         <div className="page-table-container">
           <div style={{ padding: '1rem 1rem 0 1rem', background: 'var(--mantine-color-body)' }}>
             <Title order={4}>
-              {activeTab === 'PAYABLE' ? 'Contas a Pagar' : 'Contas a Receber'}
+              {activeTab === 'PAYABLE' ? 'Contas a Pagar' : 
+               activeTab === 'CREDIT_CARD' ? 'Faturas de Cartão de Crédito' : 
+               'Contas a Receber'}
             </Title>
           </div>
           <AdvancedTable
@@ -1176,7 +1253,8 @@ export function ObligationsPage() {
               label="Tipo"
               data={[
                 { value: 'PAYABLE', label: 'A Pagar' },
-                { value: 'RECEIVABLE', label: 'A Receber' }
+                { value: 'RECEIVABLE', label: 'A Receber' },
+                { value: 'TRANSFERENCIA', label: 'Transferência' }
               ]}
               {...recurringForm.getInputProps('type')}
               required
@@ -1231,6 +1309,32 @@ export function ObligationsPage() {
               {...recurringForm.getInputProps('category')}
             />
 
+            <Group grow>
+              <Select
+                label="Conta Origem (opcional)"
+                placeholder="Selecione a conta origem..."
+                data={accounts.map(account => ({
+                  value: account.id.toString(),
+                  label: account.name
+                }))}
+                searchable
+                clearable
+                {...recurringForm.getInputProps('from_account_id')}
+              />
+              
+              <Select
+                label="Conta Destino (opcional)"
+                placeholder="Selecione a conta destino..."
+                data={accounts.map(account => ({
+                  value: account.id.toString(),
+                  label: account.name
+                }))}
+                searchable
+                clearable
+                {...recurringForm.getInputProps('to_account_id')}
+              />
+            </Group>
+
             <TextInput
               label="Entidade"
               placeholder="Ex: Empresa, Pessoa..."
@@ -1261,36 +1365,64 @@ export function ObligationsPage() {
         </form>
       </Modal>
 
-      {/* Modal de Liquidação */}
+      {/* Modal de Liquidação Unificada */}
       <Modal
         opened={settleModalOpened}
         onClose={() => {
           setSettleModalOpened(false);
           settleForm.reset();
-          setSettlingObligation(null);
+          setSettlingItem(null);
         }}
-        title="Liquidar Obrigação"
-        size="sm"
+        title={settlingItem && settlingItem.hasOwnProperty('frequency') ? "Liquidar Recorrência" : "Liquidar Obrigação"}
+        size="md"
       >
-        {settlingObligation && (
-          <form onSubmit={settleForm.onSubmit(handleSettleObligation)}>
+        {settlingItem && (
+          <form onSubmit={settleForm.onSubmit(handleSettleItem)}>
             <Stack>
               <Text>
-                <strong>Obrigação:</strong> {settlingObligation.description}
+                <strong>{settlingItem.hasOwnProperty('frequency') ? 'Recorrência' : 'Obrigação'}:</strong> {settlingItem.description}
               </Text>
               <Text>
-                <strong>Valor:</strong> R$ {parseFloat(settlingObligation.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                <strong>Valor:</strong> R$ {parseFloat(settlingItem.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
               </Text>
+              {settlingItem.category && (
+                <Text>
+                  <strong>Categoria:</strong> {settlingItem.category}
+                </Text>
+              )}
+              {settlingItem.entity_name && (
+                <Text>
+                  <strong>Entidade:</strong> {settlingItem.entity_name}
+                </Text>
+              )}
+              {settlingItem.hasOwnProperty('frequency') && (
+                <Text>
+                  <strong>Tipo:</strong> {settlingItem.type === 'PAYABLE' ? 'A Pagar' : 'A Receber'}
+                </Text>
+              )}
 
               <Select
-                label={settlingObligation.type === 'PAYABLE' ? 'Conta de Origem' : 'Conta de Destino'}
-                placeholder="Selecione a conta"
+                label="Conta de Origem (opcional)"
+                placeholder="Selecione a conta de origem"
                 data={accounts.map(account => ({
                   value: account.id.toString(),
                   label: `${account.name} (${account.type})`
                 }))}
-                {...settleForm.getInputProps('account_id')}
-                required
+                {...settleForm.getInputProps('from_account_id')}
+                clearable
+                description="Conta que terá o valor debitado"
+              />
+
+              <Select
+                label="Conta de Destino (opcional)"
+                placeholder="Selecione a conta de destino"
+                data={accounts.map(account => ({
+                  value: account.id.toString(),
+                  label: `${account.name} (${account.type})`
+                }))}
+                {...settleForm.getInputProps('to_account_id')}
+                clearable
+                description="Conta que terá o valor creditado"
               />
 
               <DatePickerInput
@@ -1309,7 +1441,7 @@ export function ObligationsPage() {
                   onClick={() => {
                     setSettleModalOpened(false);
                     settleForm.reset();
-                    setSettlingObligation(null);
+                    setSettlingItem(null);
                   }}
                 >
                   Cancelar
@@ -1367,70 +1499,6 @@ export function ObligationsPage() {
         )}
       </Modal>
 
-      {/* Modal de Liquidação de Recurring Rule */}
-      <Modal
-        opened={liquidateRuleModalOpened}
-        onClose={() => {
-          setLiquidateRuleModalOpened(false);
-          liquidateRuleForm.reset();
-          setLiquidatingRule(null);
-        }}
-        title="Liquidar Recorrência"
-        size="sm"
-      >
-        {liquidatingRule && (
-          <form onSubmit={liquidateRuleForm.onSubmit(handleLiquidateRecurringRule)}>
-            <Stack>
-              <Text>
-                <strong>Recorrência:</strong> {liquidatingRule.description}
-              </Text>
-              <Text>
-                <strong>Valor:</strong> R$ {parseFloat(liquidatingRule.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-              </Text>
-              <Text>
-                <strong>Tipo:</strong> {liquidatingRule.type === 'PAYABLE' ? 'A Pagar' : 'A Receber'}
-              </Text>
-
-              <Select
-                label={liquidatingRule.type === 'PAYABLE' ? 'Conta de Origem' : 'Conta de Destino'}
-                placeholder="Selecione a conta"
-                data={accounts.map(account => ({
-                  value: account.id.toString(),
-                  label: `${account.name} (${account.type})`
-                }))}
-                {...liquidateRuleForm.getInputProps('account_id')}
-                required
-              />
-
-              <DatePickerInput
-                label="Data de Liquidação"
-                placeholder="dd/mm/yyyy"
-                valueFormat="DD/MM/YYYY"
-                clearable
-                allowDeselect
-                {...liquidateRuleForm.getInputProps('liquidation_date')}
-                required
-              />
-
-              <Group justify="flex-end">
-                <Button
-                  variant="subtle"
-                  onClick={() => {
-                    setLiquidateRuleModalOpened(false);
-                    liquidateRuleForm.reset();
-                    setLiquidatingRule(null);
-                  }}
-                >
-                  Cancelar
-                </Button>
-                <Button type="submit" loading={loading} color="blue">
-                  Liquidar
-                </Button>
-              </Group>
-            </Stack>
-          </form>
-        )}
-      </Modal>
     </div>
   );
 }

@@ -351,10 +351,11 @@ class ReportsService:
             total_invested = Decimal(str(dashboard_data.get('totalInvested', 0)))
             total_liabilities = Decimal(str(dashboard_data.get('totalLiabilities', 0)))
             investment_cash = Decimal(str(dashboard_data.get('investmentCash', 0)))
+            total_physical_assets = Decimal(str(dashboard_data.get('totalPhysicalAssets', 0)))
             net_worth = Decimal(str(dashboard_data.get('netWorth', 0)))
             
-            # Total de ativos = investido + cash + investment_cash
-            total_assets = total_invested + total_cash + investment_cash
+            # Total de ativos = investido + cash + investment_cash + patrimônio físico
+            total_assets = total_invested + total_cash + investment_cash + total_physical_assets
             
             # 2. CALCULAR ALOCAÇÃO DE ATIVOS USANDO PORTFOLIO_SERVICE (fallback se dashboard estiver vazio)
             asset_allocation = dashboard_data.get('assetAllocation', [])
@@ -385,6 +386,10 @@ class ReportsService:
                         real_estate_funds_value += value_brl
                     else:
                         other_investments_value += value_brl
+                        
+            # Adicionar patrimônio físico à distribuição se houver
+            if total_physical_assets > 0:
+                asset_class_distribution['PATRIMONIO_FISICO'] = float(total_physical_assets)
             else:
                 # Fallback: calcular alocação diretamente do portfólio
                 portfolio = self.portfolio_service.get_portfolio_summary(user_id)
@@ -487,11 +492,12 @@ class ReportsService:
                     total_liabilities_brl, liquid_assets_brl, invested_assets_brl,
                     crypto_portfolio_value_brl, stock_portfolio_value_brl, 
                     fixed_income_value_brl, real_estate_funds_value_brl, other_investments_value_brl,
+                    total_physical_assets_brl,
                     income_last_30_days_brl, expenses_last_30_days_brl, 
                     investments_last_30_days_brl, disinvestments_last_30_days_brl,
                     asset_class_distribution_json, expense_category_distribution_json
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 ) ON DUPLICATE KEY UPDATE
                     total_net_worth_brl = VALUES(total_net_worth_brl),
                     total_assets_brl = VALUES(total_assets_brl),
@@ -503,6 +509,7 @@ class ReportsService:
                     fixed_income_value_brl = VALUES(fixed_income_value_brl),
                     real_estate_funds_value_brl = VALUES(real_estate_funds_value_brl),
                     other_investments_value_brl = VALUES(other_investments_value_brl),
+                    total_physical_assets_brl = VALUES(total_physical_assets_brl),
                     income_last_30_days_brl = VALUES(income_last_30_days_brl),
                     expenses_last_30_days_brl = VALUES(expenses_last_30_days_brl),
                     investments_last_30_days_brl = VALUES(investments_last_30_days_brl),
@@ -516,6 +523,7 @@ class ReportsService:
                 float(total_liabilities), float(total_cash + investment_cash), float(total_invested),
                 float(crypto_portfolio_value), float(stock_portfolio_value),
                 float(fixed_income_value), float(real_estate_funds_value), float(other_investments_value),
+                float(total_physical_assets),
                 float(income_last_30_days), float(expenses_last_30_days),
                 float(investments_last_30_days), float(disinvestments_last_30_days),
                 json.dumps(asset_class_distribution), json.dumps(expense_category_distribution)
