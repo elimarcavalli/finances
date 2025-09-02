@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS `assets` (
   `id` int NOT NULL AUTO_INCREMENT,
   `symbol` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
-  `asset_class` enum('CRIPTO','ACAO_BR','ACAO_US','PREVIDENCIA','FUNDO','FII','COE','RENDA_FIXA','TESOURO','COMMODITIES','OUTROS') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `asset_class` enum('CRIPTO','ACAO_BR','ACAO_US','PREVIDENCIA','FUNDO','FII','COE','RENDA_FIXA','TESOURO','COMMODITIES','OUTROS','PATRIMONIO_FISICO') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `price_api_identifier` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `contract_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `decimals` int DEFAULT '18',
@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS `daily_financial_snapshots` (
   `asset_class_distribution_json` json DEFAULT NULL COMMENT 'Estrutura JSON com a quebra de valor por classe de ativo. Ex: {"CRIPTO": 50000, "ACAO_BR": 120000}',
   `expense_category_distribution_json` json DEFAULT NULL COMMENT 'Estrutura JSON com a quebra de despesas por categoria nos últimos 30 dias. Ex: {"Moradia": 2500, "Alimentação": 1200}',
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `total_physical_assets_brl` decimal(20,2) NOT NULL DEFAULT '0.00' COMMENT 'Valor consolidado do patrimônio físico \r\n  (bens)',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_user_snapshot_date` (`user_id`,`snapshot_date`),
   CONSTRAINT `fk_snapshot_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
@@ -180,7 +181,29 @@ CREATE TABLE IF NOT EXISTS `financial_obligations` (
   CONSTRAINT `financial_obligations_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `financial_obligations_ibfk_2` FOREIGN KEY (`linked_transaction_id`) REFERENCES `transactions` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_recurring_rule` FOREIGN KEY (`recurring_rule_id`) REFERENCES `recurring_rules` (`id`) ON DELETE SET NULL
-) ENGINE=InnoDB AUTO_INCREMENT=46 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=57 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Exportação de dados foi desmarcado.
+
+-- Copiando estrutura para tabela finances.historical_price_data
+CREATE TABLE IF NOT EXISTS `historical_price_data` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `asset_symbol` varchar(20) NOT NULL COMMENT 'Símbolo do ativo (ex: BTCUSDT)',
+  `timeframe` varchar(10) NOT NULL COMMENT 'Timeframe (ex: 1d, 4h, 1h)',
+  `date` date NOT NULL COMMENT 'Data do ponto de dados',
+  `open_price` decimal(20,8) NOT NULL,
+  `high_price` decimal(20,8) NOT NULL,
+  `low_price` decimal(20,8) NOT NULL,
+  `close_price` decimal(20,8) NOT NULL,
+  `volume` decimal(20,8) NOT NULL DEFAULT '0.00000000',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_price_point` (`asset_symbol`,`timeframe`,`date`),
+  KEY `idx_symbol_timeframe` (`asset_symbol`,`timeframe`),
+  KEY `idx_date_range` (`date`),
+  KEY `idx_symbol_timeframe_date` (`asset_symbol`,`timeframe`,`date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Cache de dados históricos de preços para backtesting';
 
 -- Exportação de dados foi desmarcado.
 
@@ -221,13 +244,53 @@ CREATE TABLE IF NOT EXISTS `net_worth_snapshots_old` (
 
 -- Exportação de dados foi desmarcado.
 
+-- Copiando estrutura para tabela finances.optimization_job_results
+CREATE TABLE IF NOT EXISTS `optimization_job_results` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `job_id` int NOT NULL,
+  `parameters` json NOT NULL,
+  `total_trades` int DEFAULT NULL,
+  `win_rate_percent` decimal(5,2) DEFAULT NULL,
+  `net_profit_percent` decimal(10,2) DEFAULT NULL,
+  `max_drawdown_percent` decimal(5,2) DEFAULT NULL,
+  `sharpe_ratio` decimal(10,4) DEFAULT NULL,
+  `fitness_score` decimal(20,10) NOT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `job_id` (`job_id`),
+  CONSTRAINT `optimization_job_results_ibfk_1` FOREIGN KEY (`job_id`) REFERENCES `strategy_optimization_jobs` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=2764 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Exportação de dados foi desmarcado.
+
+-- Copiando estrutura para tabela finances.physical_assets
+CREATE TABLE IF NOT EXISTS `physical_assets` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `asset_id` int NOT NULL COMMENT 'FK para assets.id, aponta para a CATEGORIA do bem',
+  `description` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Ex: Honda Civic EXL 2023',
+  `acquisition_date` date NOT NULL COMMENT 'Data da compra',
+  `acquisition_cost` decimal(20,2) NOT NULL COMMENT 'Valor pago na compra',
+  `current_value` decimal(20,2) NOT NULL COMMENT 'Valor de mercado atual, atualizado manualmente',
+  `last_valuation_date` date NOT NULL COMMENT 'Data da última avaliação do valor de mercado',
+  `notes` text COLLATE utf8mb4_unicode_ci,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  KEY `asset_id` (`asset_id`),
+  CONSTRAINT `physical_assets_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `physical_assets_ibfk_2` FOREIGN KEY (`asset_id`) REFERENCES `assets` (`id`) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Exportação de dados foi desmarcado.
+
 -- Copiando estrutura para tabela finances.recurring_rules
 CREATE TABLE IF NOT EXISTS `recurring_rules` (
   `id` int NOT NULL AUTO_INCREMENT,
   `user_id` int NOT NULL,
   `description` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `amount` decimal(20,2) NOT NULL,
-  `type` enum('PAYABLE','RECEIVABLE') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `type` enum('PAYABLE','RECEIVABLE','TRANSFERENCIA') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `category` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `entity_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `frequency` enum('DAILY','WEEKLY','MONTHLY','YEARLY') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
@@ -236,8 +299,14 @@ CREATE TABLE IF NOT EXISTS `recurring_rules` (
   `end_date` date DEFAULT NULL,
   `is_active` tinyint(1) NOT NULL DEFAULT '1',
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `from_account_id` int DEFAULT NULL,
+  `to_account_id` int DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `user_id` (`user_id`),
+  KEY `fk_recurring_rule_from_account` (`from_account_id`),
+  KEY `fk_recurring_rule_to_account` (`to_account_id`),
+  CONSTRAINT `fk_recurring_rule_from_account` FOREIGN KEY (`from_account_id`) REFERENCES `accounts` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_recurring_rule_to_account` FOREIGN KEY (`to_account_id`) REFERENCES `accounts` (`id`) ON DELETE SET NULL,
   CONSTRAINT `recurring_rules_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB AUTO_INCREMENT=15 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -254,7 +323,30 @@ CREATE TABLE IF NOT EXISTS `strategies` (
   PRIMARY KEY (`id`),
   KEY `user_id` (`user_id`),
   CONSTRAINT `strategies_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Exportação de dados foi desmarcado.
+
+-- Copiando estrutura para tabela finances.strategy_optimization_jobs
+CREATE TABLE IF NOT EXISTS `strategy_optimization_jobs` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `base_strategy_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `asset_id` int NOT NULL,
+  `timeframe` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `start_date` date NOT NULL,
+  `end_date` date NOT NULL,
+  `parameter_ranges` json NOT NULL,
+  `status` enum('PENDING','RUNNING','COMPLETED','FAILED') COLLATE utf8mb4_unicode_ci DEFAULT 'PENDING',
+  `progress` decimal(5,2) NOT NULL DEFAULT '0.00' COMMENT 'Progresso da otimização em porcentagem (0.00 - 100.00)',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  KEY `asset_id` (`asset_id`),
+  CONSTRAINT `strategy_optimization_jobs_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `strategy_optimization_jobs_ibfk_2` FOREIGN KEY (`asset_id`) REFERENCES `assets` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=30 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Exportação de dados foi desmarcado.
 
