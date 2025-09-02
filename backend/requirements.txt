@@ -60,3 +60,9 @@ uvicorn==0.35.0
 web3==7.13.0
 websockets==15.0.1
 yarl==1.20.1
+pandas>=2.0.0,<2.2
+pandas_ta==0.3.14b
+pandas-ta-openbb==0.4.22
+setuptools>=65.0.0
+wheel>=0.40.0
+numpy<1.25
