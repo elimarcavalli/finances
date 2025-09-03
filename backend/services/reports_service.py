@@ -170,6 +170,7 @@ class ReportsService:
                 AND type = 'DESPESA'
                 AND status = 'EFETIVADO'
                 AND transaction_date BETWEEN %s AND %s
+                AND category NOT IN ('Aquisição de Patrimônio', 'Venda de Patrimônio')
                 GROUP BY COALESCE(category, 'Sem Categoria')
                 ORDER BY total_amount DESC
             """, (user_id, start_date, end_date))
@@ -223,6 +224,7 @@ class ReportsService:
                 AND type IN ('RECEITA', 'DESPESA')
                 AND status = 'EFETIVADO'
                 AND transaction_date BETWEEN %s AND %s
+                AND category NOT IN ('Aquisição de Patrimônio', 'Venda de Patrimônio')
                 GROUP BY YEAR(transaction_date), MONTH(transaction_date), type
                 ORDER BY year_val ASC, month_val ASC, type ASC
             """, (user_id, start_date, end_date))
@@ -438,6 +440,7 @@ class ReportsService:
                 AND type = 'DESPESA'
                 AND transaction_date BETWEEN %s AND %s
                 AND status = 'EFETIVADO'
+                AND category NOT IN ('Aquisição de Patrimônio', 'Venda de Patrimônio')
             """, (user_id, date_30_days_ago, snapshot_date))
             expenses_result = cursor.fetchone()
             expenses_last_30_days = Decimal(str(expenses_result.get('expenses_30_days', 0)))
@@ -474,6 +477,7 @@ class ReportsService:
                 AND type = 'DESPESA'
                 AND transaction_date BETWEEN %s AND %s
                 AND status = 'EFETIVADO'
+                AND category NOT IN ('Aquisição de Patrimônio', 'Venda de Patrimônio')
                 GROUP BY category
             """, (user_id, date_30_days_ago, snapshot_date))
             expense_categories = cursor.fetchall()
@@ -1004,6 +1008,7 @@ class ReportsService:
                 AND t.type = 'DESPESA'
                 AND t.transaction_date BETWEEN %s AND %s
                 AND t.status = 'EFETIVADO'
+                AND t.category NOT IN ('Aquisição de Patrimônio', 'Venda de Patrimônio')
                 ORDER BY t.amount DESC
                 LIMIT 10
             """
@@ -1066,7 +1071,8 @@ class ReportsService:
         
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
-            # Query que é a fonte da verdade - soma diretamente da tabela transactions
+            # PHASE 4: Query que exclui transações de capital (patrimônio físico)
+            # Esta é a fonte da verdade para fluxo de caixa operacional
             query = """
                 SELECT 
                     SUM(IF(t.type = 'RECEITA', t.amount, 0)) as total_income,
@@ -1078,6 +1084,7 @@ class ReportsService:
                 AND t.transaction_date BETWEEN %s AND %s
                 AND t.type IN ('RECEITA', 'DESPESA')
                 AND t.status = 'EFETIVADO'
+                AND t.category NOT IN ('Aquisição de Patrimônio', 'Venda de Patrimônio')
             """
             
             cursor.execute(query, (user_id, start_date, end_date))

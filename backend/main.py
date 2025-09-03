@@ -210,7 +210,7 @@ class FinancialObligationCreate(BaseModel):
     description: str
     amount: float
     due_date: date
-    type: str  # PAYABLE, RECEIVABLE
+    type: str  # PAYABLE, RECEIVABLE, TRANSFERENCIA
     category: Optional[str] = None
     entity_name: Optional[str] = None
     notes: Optional[str] = None
@@ -1515,6 +1515,20 @@ async def liquidate_physical_asset(physical_asset_id: int, liquidation_data: Liq
     try:
         result = physical_asset_service.liquidate_physical_asset(user_id, physical_asset_id, liquidation_data.model_dump())
         return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# === REPORTS ENDPOINTS ===
+@app.get("/reports/physical-assets-summary")
+async def get_physical_assets_summary_for_reports(current_user: dict = Depends(get_current_user)):
+    """PHASE 4: Endpoint para análise detalhada de patrimônio físico nos relatórios"""
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        summary_data = physical_asset_service.get_active_physical_assets_for_report(user_id)
+        return summary_data
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

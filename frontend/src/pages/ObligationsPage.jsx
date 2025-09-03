@@ -741,7 +741,7 @@ export function ObligationsPage() {
       filterable: false,
       align: 'right',
       render: (row) => (
-        <Text size="sm" fw={500} c={row.type === 'PAYABLE' ? 'red' : 'green'}>
+        <Text size="sm" fw={500} c={row.type === 'PAYABLE' ? 'red' : row.type === 'RECEIVABLE' ? 'green' : 'blue'}>
           {formatCurrency(row.amount)}
         </Text>
       )
@@ -841,7 +841,7 @@ export function ObligationsPage() {
       filterable: false,
       align: 'right',
       render: (row) => (
-        <Text size="sm" fw={500} c={row.type === 'PAYABLE' ? 'red' : 'green'}>
+        <Text size="sm" fw={500} c={row.type === 'PAYABLE' ? 'red' : row.type === 'RECEIVABLE' ? 'green' : 'blue'}>
           {formatCurrency(row.amount)}
         </Text>
       )
@@ -952,6 +952,9 @@ export function ObligationsPage() {
     } else if (activeTab === 'RECEIVABLE') {
       // A Receber: type = 'RECEIVABLE' (sem alteração)
       matches = obligation.type === 'RECEIVABLE';
+    } else if (activeTab === 'TRANSFERENCIA') {
+      // A Transferir: type = 'TRANSFERENCIA'
+      matches = obligation.type === 'TRANSFERENCIA';
     }
     
     // Aplicar filtro de status se não for 'ALL'
@@ -1037,6 +1040,7 @@ export function ObligationsPage() {
           { label: 'A Pagar', value: 'PAYABLE' },
           { label: 'Faturas de Cartão', value: 'CREDIT_CARD' },
           { label: 'A Receber', value: 'RECEIVABLE' },
+          { label: 'A Transferir', value: 'TRANSFERENCIA' },
           { label: 'Recorrências', value: 'RECURRING' }
         ]}
         mb="md"
@@ -1066,9 +1070,9 @@ export function ObligationsPage() {
       {activeTab === 'RECURRING' ? (
         // Tabela de Regras de Recorrência
         <div className="page-table-container">
-          <div style={{ padding: '1rem 1rem 0 1rem', background: 'var(--mantine-color-body)' }}>
+          {/* <div style={{ padding: '1rem 1rem 0 1rem', background: 'var(--mantine-color-body)' }}>
             <Title order={4}>Regras de Recorrência</Title>
-          </div>
+          </div> */}
           <AdvancedTable
             data={recurringRules}
             columns={recurringRulesColumns}
@@ -1084,6 +1088,7 @@ export function ObligationsPage() {
             <Title order={4}>
               {activeTab === 'PAYABLE' ? 'Contas a Pagar' : 
                activeTab === 'CREDIT_CARD' ? 'Faturas de Cartão de Crédito' : 
+               activeTab === 'TRANSFERENCIA' ? 'Transferências a Realizar' :
                'Contas a Receber'}
             </Title>
           </div>
@@ -1142,7 +1147,8 @@ export function ObligationsPage() {
               label="Tipo"
               data={[
                 { value: 'PAYABLE', label: 'A Pagar' },
-                { value: 'RECEIVABLE', label: 'A Receber' }
+                { value: 'RECEIVABLE', label: 'A Receber' },
+                { value: 'TRANSFERENCIA', label: 'Transferência' }
               ]}
               {...obligationForm.getInputProps('type')}
               required

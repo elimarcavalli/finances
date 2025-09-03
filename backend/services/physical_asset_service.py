@@ -251,6 +251,89 @@ class PhysicalAssetService:
         finally:
             cursor.close()
 
+    def get_active_physical_assets_for_report(self, user_id: int) -> Dict:
+        """
+        PHASE 4: Retorna dados detalhados dos bens físicos ativos para relatórios analíticos.
+        Inclui KPIs agregados e lista detalhada para visualizações como Treemap.
+        """
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        try:
+            # 1. Buscar todos os bens ativos com informações detalhadas
+            query = """
+                SELECT 
+                    pa.id,
+                    pa.description,
+                    pa.acquisition_cost,
+                    pa.current_value,
+                    pa.acquisition_date,
+                    pa.last_valuation_date,
+                    pa.notes,
+                    a.name as asset_class_name,
+                    a.icon_url as asset_icon_url,
+                    a.symbol as asset_class_symbol,
+                    (pa.current_value - pa.acquisition_cost) as value_variation
+                FROM physical_assets pa
+                JOIN assets a ON pa.asset_id = a.id
+                WHERE pa.user_id = %s AND pa.status = 'ATIVO'
+                ORDER BY pa.current_value DESC
+            """
+            cursor.execute(query, (user_id,))
+            assets = cursor.fetchall()
+            
+            # 2. Calcular KPIs agregados
+            total_market_value = sum(Decimal(str(asset['current_value'])) for asset in assets)
+            total_acquisition_cost = sum(Decimal(str(asset['acquisition_cost'])) for asset in assets)
+            total_value_variation = total_market_value - total_acquisition_cost
+            value_variation_percentage = float((total_value_variation / total_acquisition_cost * 100) if total_acquisition_cost > 0 else 0)
+            
+            # 3. Estatísticas por categoria
+            categories_stats = {}
+            for asset in assets:
+                category = asset['asset_class_name']
+                if category not in categories_stats:
+                    categories_stats[category] = {
+                        'count': 0,
+                        'total_market_value': Decimal('0'),
+                        'total_acquisition_cost': Decimal('0'),
+                        'icon_url': asset['asset_icon_url'],
+                        'symbol': asset['asset_class_symbol']
+                    }
+                
+                categories_stats[category]['count'] += 1
+                categories_stats[category]['total_market_value'] += Decimal(str(asset['current_value']))
+                categories_stats[category]['total_acquisition_cost'] += Decimal(str(asset['acquisition_cost']))
+            
+            # Converter Decimals para float para serialização JSON
+            for asset in assets:
+                for key in ['acquisition_cost', 'current_value', 'value_variation']:
+                    asset[key] = float(asset[key]) if asset[key] is not None else 0.0
+            
+            for category_data in categories_stats.values():
+                category_data['total_market_value'] = float(category_data['total_market_value'])
+                category_data['total_acquisition_cost'] = float(category_data['total_acquisition_cost'])
+                category_data['value_variation'] = category_data['total_market_value'] - category_data['total_acquisition_cost']
+                category_data['value_variation_percentage'] = (
+                    (category_data['value_variation'] / category_data['total_acquisition_cost'] * 100) 
+                    if category_data['total_acquisition_cost'] > 0 else 0.0
+                )
+            
+            return {
+                'summary': {
+                    'total_market_value': float(total_market_value),
+                    'total_acquisition_cost': float(total_acquisition_cost),
+                    'total_value_variation': float(total_value_variation),
+                    'value_variation_percentage': value_variation_percentage,
+                    'total_count': len(assets)
+                },
+                'assets': assets,
+                'categories': categories_stats
+            }
+            
+        except mysql.connector.Error as err:
+            raise Exception(f"Erro ao buscar dados de patrimônio físico para relatório: {err}")
+        finally:
+            cursor.close()
+
     def liquidate_physical_asset(self, user_id: int, physical_asset_id: int, liquidation_data: Dict) -> Dict:
         """
         PHASE 3: Liquida (vende) um bem físico sem deletá-lo do banco.

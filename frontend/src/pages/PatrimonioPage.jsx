@@ -485,12 +485,12 @@ export function PatrimonioPage() {
   return (
     <Stack>
       <Group justify="space-between">
-        <Title order={2}>Meu Patrimônio</Title>
+        <Title order={2}>Patrimônio | Bens | Ativos Físicos</Title>
         <Button leftSection={<IconPlus size={16} />} onClick={() => openModal()}>
           Adicionar Bem
         </Button>
       </Group>
-      <Text c="dimmed">Gerencie seus bens físicos como veículos, imóveis, eletrônicos e outros ativos de valor.</Text>
+      {/* <Text c="dimmed">Gerencie seus bens físicos como veículos, imóveis, eletrônicos e outros ativos de valor.</Text> */}
 
       <Card withBorder padding="md" radius="md">
         <Group>

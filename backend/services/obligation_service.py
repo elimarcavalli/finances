@@ -168,7 +168,7 @@ class ObligationService:
             fields = []
             values = []
             
-            allowed_fields = ['description', 'amount', 'due_date', 'category', 'entity_name', 'notes', 'status', 'linked_transaction_id', 'recurring_rule_id']
+            allowed_fields = ['description', 'amount', 'due_date', 'category', 'entity_name', 'notes', 'status', 'linked_transaction_id', 'recurring_rule_id', 'from_account_id', 'to_account_id']
             for field in allowed_fields:
                 if field in obligation_data:
                     fields.append(f"{field} = %s")

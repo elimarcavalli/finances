@@ -3,7 +3,6 @@ import {
   Title,
   Text,
   Stack,
-  Tabs,
   Grid,
   Card,
   Paper,
@@ -28,7 +27,11 @@ import {
   IconCalendar, 
   IconRefresh, 
   IconArrowUpRight, 
-  IconArrowDownRight 
+  IconArrowDownRight,
+  IconBuildingWarehouse,
+  IconHome,
+  IconCar,
+  IconDeviceDesktop
 } from '@tabler/icons-react';
 import { 
   LineChart, 
@@ -46,9 +49,10 @@ import {
   Treemap
 } from 'recharts';
 import api from '../api';
+import { AdvancedTable } from '../components/AdvancedTable';
 
 export function ReportsPage() {
-  const [activeTab, setActiveTab] = useState('patrimonio');
+  // PHASE 4: Removido activeTab - agora é um dashboard unificado
   const [periodFilter, setPeriodFilter] = useState('6m');
   const [snapshotsData, setSnapshotsData] = useState([]);
   const [expenseAnalysis, setExpenseAnalysis] = useState(null);
@@ -72,6 +76,10 @@ export function ReportsPage() {
   const [topExpenses, setTopExpenses] = useState([]);
   const [loadingCashFlow, setLoadingCashFlow] = useState(false);
   const [loadingTopExpenses, setLoadingTopExpenses] = useState(false);
+  
+  // PHASE 4: Estados para widget de Patrimônio Físico
+  const [physicalAssetsData, setPhysicalAssetsData] = useState(null);
+  const [loadingPhysicalAssets, setLoadingPhysicalAssets] = useState(false);
   
   // Estado para KPIs corretos (fonte da verdade do backend)
   const [cashFlowKPIs, setCashFlowKPIs] = useState({ 
@@ -192,6 +200,7 @@ export function ReportsPage() {
     fetchCashFlowData();
     fetchTopExpenses();
     fetchCashFlowKPIs();
+    fetchPhysicalAssetsData(); // PHASE 4: Dados de patrimônio físico
   }, []);
 
   // Efeito para recarregar quando o período muda
@@ -336,6 +345,25 @@ export function ReportsPage() {
       });
     } finally {
       setLoadingKPIs(false);
+    }
+  };
+
+  // PHASE 4: Buscar dados de patrimônio físico para relatórios
+  const fetchPhysicalAssetsData = async () => {
+    setLoadingPhysicalAssets(true);
+    try {
+      const response = await api.get('/reports/physical-assets-summary');
+      setPhysicalAssetsData(response.data);
+    } catch (error) {
+      console.error('Erro ao buscar dados de patrimônio físico:', error);
+      notifications.show({
+        title: 'Erro',
+        message: 'Não foi possível carregar dados de patrimônio físico',
+        color: 'red'
+      });
+      setPhysicalAssetsData(null);
+    } finally {
+      setLoadingPhysicalAssets(false);
     }
   };
 
@@ -490,23 +518,15 @@ export function ReportsPage() {
         </Group>
       </Card>
 
-      <Tabs value={activeTab} onChange={setActiveTab}>
-        <Tabs.List>
-          <Tabs.Tab value="patrimonio" leftSection={<IconChartLine size="0.8rem" />}>
-            Evolução do Patrimônio
-          </Tabs.Tab>
-          <Tabs.Tab value="fluxo" leftSection={<IconCash size="0.8rem" />}>
-            Análise de Fluxo de Caixa
-          </Tabs.Tab>
-          <Tabs.Tab value="performance" leftSection={<IconTrendingUp size="0.8rem" />}>
-            Performance de Investimentos
-          </Tabs.Tab>
-        </Tabs.List>
-
-        <Tabs.Panel value="patrimonio" pt="md">
-          <Stack gap="md">
-
-            {/* KPIs Resumidos */}
+      {/* PHASE 4: Dashboard Unificado - Widget de Evolução do Patrimônio */}
+      <Card withBorder padding="md">
+        <Stack gap="md">
+          <Group>
+            <IconChartLine size={24} />
+            <Title order={3}>Evolução do Patrimônio</Title>
+          </Group>
+          
+          {/* KPIs Resumidos */}
             {chartData.length > 0 && (
               <Grid>
                 <Grid.Col span={{ base: 12, md: 3 }}>
@@ -646,6 +666,14 @@ export function ReportsPage() {
                             fill="#6b7280"
                             fillOpacity={0.8}
                           />
+                          <Area
+                            type="monotone"
+                            dataKey="PATRIMONIO_FISICO"
+                            stackId="1"
+                            stroke="#9333ea"
+                            fill="#9333ea"
+                            fillOpacity={0.8}
+                          />
                         </AreaChart>
                       </ResponsiveContainer>
                     ) : (
@@ -781,10 +809,247 @@ export function ReportsPage() {
                 </Card>
               </Grid.Col>
             </Grid>
-          </Stack>
-        </Tabs.Panel>
+        </Stack>
+      </Card>
 
-        <Tabs.Panel value="fluxo" pt="md">
+      {/* PHASE 4: Widget de Patrimônio Físico - Treemap */}
+      <Card withBorder padding="md">
+        <Stack gap="md">
+          <Group>
+            <IconBuildingWarehouse size={24} />
+            <Title order={3}>Composição do Patrimônio Físico</Title>
+          </Group>
+          
+          {loadingPhysicalAssets ? (
+            <Center h={300}>
+              <Loader />
+            </Center>
+          ) : physicalAssetsData && physicalAssetsData.summary ? (
+            <>
+              {/* KPIs em Destaque - Melhor Alinhamento */}
+              <Grid gutter="md">
+                <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
+                  <Card withBorder padding="lg" h={140}>
+                    <Stack gap="sm" h="100%" justify="space-between">
+                      <Group justify="space-between" align="flex-start">
+                        <Text size="sm" c="dimmed" tt="uppercase" fw={600} lh={1.2}>
+                          Valor de Mercado Total
+                        </Text>
+                        <IconBuildingWarehouse size={20} color="#3b82f6" />
+                      </Group>
+                      <Text size="xl" fw={700} c="blue" ta="left">
+                        {formatCurrency(physicalAssetsData.summary.total_market_value)}
+                      </Text>
+                      <Text size="xs" c="dimmed">
+                        {physicalAssetsData.summary.total_count} {physicalAssetsData.summary.total_count === 1 ? 'bem cadastrado' : 'bens cadastrados'}
+                      </Text>
+                    </Stack>
+                  </Card>
+                </Grid.Col>
+                <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
+                  <Card withBorder padding="lg" h={140}>
+                    <Stack gap="sm" h="100%" justify="space-between">
+                      <Group justify="space-between" align="flex-start">
+                        <Text size="sm" c="dimmed" tt="uppercase" fw={600} lh={1.2}>
+                          Custo de Aquisição
+                        </Text>
+                        <IconCash size={20} color="#6b7280" />
+                      </Group>
+                      <Text size="xl" fw={700} c="gray" ta="left">
+                        {formatCurrency(physicalAssetsData.summary.total_acquisition_cost)}
+                      </Text>
+                      <Text size="xs" c="dimmed">
+                        Investimento inicial
+                      </Text>
+                    </Stack>
+                  </Card>
+                </Grid.Col>
+                <Grid.Col span={{ base: 12, sm: 12, md: 4 }}>
+                  <Card withBorder padding="lg" h={140}>
+                    <Stack gap="sm" h="100%" justify="space-between">
+                      <Group justify="space-between" align="flex-start">
+                        <Text size="sm" c="dimmed" tt="uppercase" fw={600} lh={1.2}>
+                          Variação de Valor
+                        </Text>
+                        {physicalAssetsData.summary.total_value_variation >= 0 ? 
+                          <IconArrowUpRight size={20} color="green" /> : 
+                          <IconArrowDownRight size={20} color="red" />
+                        }
+                      </Group>
+                      <Group align="baseline" gap="xs">
+                        <Text size="xl" fw={700} c={physicalAssetsData.summary.total_value_variation >= 0 ? 'green' : 'red'} ta="left">
+                          {formatCurrency(physicalAssetsData.summary.total_value_variation)}
+                        </Text>
+                        <Text size="sm" fw={600} c={physicalAssetsData.summary.total_value_variation >= 0 ? 'green' : 'red'}>
+                          ({physicalAssetsData.summary.value_variation_percentage >= 0 ? '+' : ''}{physicalAssetsData.summary.value_variation_percentage.toFixed(1)}%)
+                        </Text>
+                      </Group>
+                      <Text size="xs" c="dimmed">
+                        {physicalAssetsData.summary.total_value_variation >= 0 ? 'Valorização' : 'Desvalorização'}
+                      </Text>
+                    </Stack>
+                  </Card>
+                </Grid.Col>
+              </Grid>
+
+              {/* Visualização Principal - Treemap */}
+              {physicalAssetsData.assets && physicalAssetsData.assets.length > 0 ? (
+                <>
+                  <Text size="sm" c="dimmed">Cada retângulo representa um bem físico, com área proporcional ao seu valor atual.</Text>
+                  <Paper withBorder padding="md">
+                    <ResponsiveContainer width="100%" height={400}>
+                      <Treemap
+                        data={physicalAssetsData.assets.map(asset => ({
+                          name: asset.description,
+                          size: asset.current_value,
+                          category: asset.asset_class_name,
+                          acquisitionCost: asset.acquisition_cost,
+                          valueVariation: asset.value_variation,
+                          icon: asset.asset_icon_url
+                        }))}
+                        dataKey="size"
+                        aspectRatio={4/3}
+                        stroke="#fff"
+                        fill="#8884d8"
+                      >
+                        <Tooltip 
+                          content={({ active, payload }) => {
+                            if (active && payload && payload[0]) {
+                              const data = payload[0].payload;
+                              return (
+                                <Paper withBorder padding="sm" shadow="md">
+                                  <Stack gap={4}>
+                                    <Text fw={500} size="sm">{data.name}</Text>
+                                    <Text size="xs" c="dimmed">{data.category}</Text>
+                                    <Text size="sm" c="blue">Valor Atual: {formatCurrency(data.size)}</Text>
+                                    <Text size="sm" c="gray">Custo: {formatCurrency(data.acquisitionCost)}</Text>
+                                    <Text size="sm" c={data.valueVariation >= 0 ? 'green' : 'red'}>
+                                      Variação: {formatCurrency(data.valueVariation)}
+                                    </Text>
+                                  </Stack>
+                                </Paper>
+                              );
+                            }
+                            return null;
+                          }}
+                        />
+                      </Treemap>
+                    </ResponsiveContainer>
+                  </Paper>
+                  
+                  {/* Tabela Avançada com Filtros e Ordenação */}
+                  <AdvancedTable
+                    data={physicalAssetsData.assets}
+                    columns={[
+                      {
+                        key: 'bem',
+                        label: 'Bem',
+                        sortable: true,
+                        render: (asset) => (
+                          <Group gap="xs">
+                            {asset.asset_icon_url && (
+                              <img src={asset.asset_icon_url} alt="" width={20} height={20} style={{ borderRadius: '4px' }} />
+                            )}
+                            <div>
+                              <Text size="sm" fw={500}>{asset.description}</Text>
+                              <Text size="xs" c="dimmed">{asset.asset_class_name}</Text>
+                            </div>
+                          </Group>
+                        )
+                      },
+                      {
+                        key: 'acquisition_date',
+                        label: 'Data Aquisição',
+                        sortable: true,
+                        render: (asset) => (
+                          <Text size="sm" c="dimmed">
+                            {asset.acquisition_date ? new Date(asset.acquisition_date).toLocaleDateString('pt-BR') : '-'}
+                          </Text>
+                        )
+                      },
+                      {
+                        key: 'current_value',
+                        label: 'Valor Atual',
+                        sortable: true,
+                        render: (asset) => (
+                          <Text size="sm" fw={600} c="blue">
+                            {formatCurrency(asset.current_value)}
+                          </Text>
+                        )
+                      },
+                      {
+                        key: 'acquisition_cost',
+                        label: 'Custo',
+                        sortable: true,
+                        render: (asset) => (
+                          <Text size="sm" c="dimmed">
+                            {formatCurrency(asset.acquisition_cost)}
+                          </Text>
+                        )
+                      },
+                      {
+                        key: 'value_variation',
+                        label: 'Variação',
+                        sortable: true,
+                        render: (asset) => {
+                          const variation = asset.value_variation || 0;
+                          const variationPercent = asset.acquisition_cost > 0 ? (variation / asset.acquisition_cost * 100) : 0;
+                          return (
+                            <div>
+                              <Group gap="xs" align="center">
+                                <Text size="sm" fw={500} c={variation >= 0 ? 'green' : 'red'}>
+                                  {formatCurrency(variation)}
+                                </Text>
+                                {variation >= 0 ? 
+                                  <IconArrowUpRight size={14} color="green" /> : 
+                                  <IconArrowDownRight size={14} color="red" />
+                                }
+                              </Group>
+                              <Text size="xs" c={variation >= 0 ? 'green' : 'red'}>
+                                {variationPercent >= 0 ? '+' : ''}{variationPercent.toFixed(1)}%
+                              </Text>
+                            </div>
+                          );
+                        }
+                      }
+                    ]}
+                    searchable={true}
+                    searchPlaceholder="Buscar por bem, categoria..."
+                    sortBy="current_value"
+                    sortOrder="desc"
+                  />
+                </>
+              ) : (
+                <Center h={200}>
+                  <Stack align="center">
+                    <IconBuildingWarehouse size={48} color="gray" />
+                    <Text c="dimmed">Nenhum bem físico cadastrado</Text>
+                    <Text size="sm" c="dimmed">Cadastre seus bens físicos para visualizar a composição do patrimônio</Text>
+                  </Stack>
+                </Center>
+              )}
+            </>
+          ) : (
+            <Center h={200}>
+              <Stack align="center">
+                <IconBuildingWarehouse size={48} color="gray" />
+                <Text c="dimmed">Nenhum bem físico cadastrado</Text>
+              </Stack>
+            </Center>
+          )}
+        </Stack>
+      </Card>
+
+      {/* PHASE 4: Widget de Análise de Fluxo de Caixa */}
+      <Card withBorder padding="md">
+        <Stack gap="md">
+          <Group>
+            <IconCash size={24} />
+            <div>
+              <Title order={3}>Análise de Fluxo de Caixa</Title>
+              <Text size="sm" c="dimmed">Esta análise reflete seu fluxo de caixa operacional e exclui transações de capital (compra/venda de patrimônio).</Text>
+            </div>
+          </Group>
           <Stack gap="lg">
             {/* KPIs Principais - FONTE DA VERDADE DO BACKEND */}
             <Grid>
@@ -1015,46 +1280,52 @@ export function ReportsPage() {
               </Stack>
             </Card>
           </Stack>
-        </Tabs.Panel>
+        </Stack>
+      </Card>
 
-        <Tabs.Panel value="performance" pt="md">
-          <Stack gap="md">
-            {/* Placeholders para análises de performance */}
-            <Grid>
-              <Grid.Col span={{ base: 12, md: 4 }}>
-                <Paper withBorder padding="md" h={200}>
-                  <Center h="100%">
-                    <Stack align="center">
-                      <Text fw={500}>Crescimento do Portfólio</Text>
-                      <Text size="sm" c="dimmed">Em desenvolvimento</Text>
-                    </Stack>
-                  </Center>
-                </Paper>
-              </Grid.Col>
-              <Grid.Col span={{ base: 12, md: 4 }}>
-                <Paper withBorder padding="md" h={200}>
-                  <Center h="100%">
-                    <Stack align="center">
-                      <Text fw={500}>Rentabilidade por Classe</Text>
-                      <Text size="sm" c="dimmed">Em desenvolvimento</Text>
-                    </Stack>
-                  </Center>
-                </Paper>
-              </Grid.Col>
-              <Grid.Col span={{ base: 12, md: 4 }}>
-                <Paper withBorder padding="md" h={200}>
-                  <Center h="100%">
-                    <Stack align="center">
-                      <Text fw={500}>Performance Individual</Text>
-                      <Text size="sm" c="dimmed">Em desenvolvimento</Text>
-                    </Stack>
-                  </Center>
-                </Paper>
-              </Grid.Col>
-            </Grid>
-          </Stack>
-        </Tabs.Panel>
-      </Tabs>
+      {/* PHASE 4: Widget de Performance de Investimentos */}
+      <Card withBorder padding="md">
+        <Stack gap="md">
+          <Group>
+            <IconTrendingUp size={24} />
+            <Title order={3}>Performance de Investimentos</Title>
+          </Group>
+          
+          {/* Placeholders para análises de performance */}
+          <Grid>
+            <Grid.Col span={{ base: 12, md: 4 }}>
+              <Paper withBorder padding="md" h={200}>
+                <Center h="100%">
+                  <Stack align="center">
+                    <Text fw={500}>Crescimento do Portfólio</Text>
+                    <Text size="sm" c="dimmed">Em desenvolvimento</Text>
+                  </Stack>
+                </Center>
+              </Paper>
+            </Grid.Col>
+            <Grid.Col span={{ base: 12, md: 4 }}>
+              <Paper withBorder padding="md" h={200}>
+                <Center h="100%">
+                  <Stack align="center">
+                    <Text fw={500}>Rentabilidade por Classe</Text>
+                    <Text size="sm" c="dimmed">Em desenvolvimento</Text>
+                  </Stack>
+                </Center>
+              </Paper>
+            </Grid.Col>
+            <Grid.Col span={{ base: 12, md: 4 }}>
+              <Paper withBorder padding="md" h={200}>
+                <Center h="100%">
+                  <Stack align="center">
+                    <Text fw={500}>Performance Individual</Text>
+                    <Text size="sm" c="dimmed">Em desenvolvimento</Text>
+                  </Stack>
+                </Center>
+              </Paper>
+            </Grid.Col>
+          </Grid>
+        </Stack>
+      </Card>
 
       {/* Modal de Drill-Down */}
       <Modal

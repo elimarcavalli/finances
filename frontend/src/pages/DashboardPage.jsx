@@ -13,7 +13,8 @@ import {
   Progress,
   Alert,
   SegmentedControl,
-  UnstyledButton
+  UnstyledButton,
+  Tabs
 } from '@mantine/core';
 import {
   PieChart,
@@ -52,13 +53,16 @@ const ASSET_CLASS_LABELS = {
 export function DashboardPage() {
   const [dashboardData, setDashboardData] = useState(null);
   const [cashFlowChart, setCashFlowChart] = useState([]);
-  const [netWorthHistory, setNetWorthHistory] = useState([]);
   const [upcomingObligations, setUpcomingObligations] = useState(null);
   const [cashFlowPeriod, setCashFlowPeriod] = useState('monthly');
   const [loading, setLoading] = useState(true);
   const [chartLoading, setChartLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [obligationsLoading, setObligationsLoading] = useState(false);
+  
+  // PHASE 4-2: Estados para gráficos interativos
+  const [activeChartTab, setActiveChartTab] = useState('netWorth');
+  const [snapshotsHistory, setSnapshotsHistory] = useState([]);
   
   // Hooks de ordenação para as tabelas
   const holdingsSorting = useSorting('value', 'desc');
@@ -72,18 +76,103 @@ export function DashboardPage() {
     }).format(value);
   };
 
+  // PHASE 4-2: Componente Reutilizável para Gráficos Históricos
+  const HistoricalLineChart = ({ data, dataKey, strokeColor, name }) => {
+    if (!data || data.length === 0) {
+      return (
+        <Alert icon={<IconAlertCircle size={16} />} color="blue">
+          Nenhum dado histórico disponível para {name}.
+        </Alert>
+      );
+    }
+
+    return (
+      <ResponsiveContainer width="100%" height={350}>
+        <LineChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis 
+            dataKey="snapshot_date" 
+            tickFormatter={(value) => new Date(value).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
+          />
+          <YAxis 
+            tickFormatter={(value) => formatCurrency(value)}
+          />
+          <Tooltip 
+            formatter={(value) => [formatCurrency(value), name]}
+            labelFormatter={(value) => new Date(value).toLocaleDateString('pt-BR')}
+          />
+          <Line 
+            type="monotone" 
+            dataKey={dataKey} 
+            stroke={strokeColor} 
+            strokeWidth={3}
+            dot={{ fill: strokeColor, strokeWidth: 2, r: 4 }}
+            activeDot={{ r: 6, stroke: strokeColor, strokeWidth: 2, fill: '#fff' }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  };
+
   const fetchDashboardData = async () => {
     setLoading(true);
     try {
-      const dashboardRes = await api.get('/summary/dashboard');
+      // PHASE 4-FINAL: Paralelização completa das chamadas de API para melhor performance
+      const [dashboardRes] = await Promise.all([
+        api.get('/summary/dashboard'),
+        fetchCashFlowChart(cashFlowPeriod),
+        fetchSnapshotsHistory()
+      ]);
+      
       setDashboardData(dashboardRes.data);
-      await fetchCashFlowChart(cashFlowPeriod);
-      // await fetchNetWorthHistory();
     } catch (error) {
       handleApiError(error, 'Erro ao carregar dados do dashboard');
     } finally {
       setLoading(false);
     }
+  };
+
+  // PHASE 4-2: Função para buscar histórico de snapshots
+  const fetchSnapshotsHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      // Buscar últimos 6 meses de dados
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setMonth(endDate.getMonth() - 6);
+
+      const response = await api.get(`/reports/snapshots/history?start_date=${startDate.toISOString().split('T')[0]}&end_date=${endDate.toISOString().split('T')[0]}`);
+      
+      if (response.data.success) {
+        setSnapshotsHistory(response.data.snapshots);
+      } else {
+        setSnapshotsHistory([]);
+      }
+    } catch (error) {
+      handleApiError(error, 'Erro ao carregar histórico de snapshots');
+      setSnapshotsHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // PHASE 4-FINAL: Função robusta para transformar dados do fluxo de caixa para o BarChart
+  // Centraliza toda a lógica de formatação seguindo o Princípio da Responsabilidade Única
+  const transformCashFlowData = () => {
+    if (!cashFlowChart || cashFlowChart.length === 0) return [];
+    
+    return cashFlowChart.map(item => {
+      // Garantir que sempre tenhamos uma chave de período válida
+      const periodKey = item.period || item.month || item.date || new Date().toISOString().split('T')[0];
+      
+      return {
+        period: formatDateForChart(periodKey),
+        income: Math.abs(parseFloat(item.income) || 0),
+        expense: Math.abs(parseFloat(item.expense) || 0),
+        // Dados originais para referência se necessário
+        rawPeriod: periodKey
+      };
+    });
   };
 
   const fetchCashFlowChart = async (period) => {
@@ -100,17 +189,6 @@ export function DashboardPage() {
     }
   };
 
-  // const fetchNetWorthHistory = async () => {
-  //   setHistoryLoading(true);
-  //   try {
-  //     const historyRes = await api.get('/summary/net-worth-history');
-  //     setNetWorthHistory(historyRes.data);
-  //   } catch (error) {
-  //     handleApiError(error, 'Erro ao carregar histórico de patrimônio');
-  //   } finally {
-  //     setHistoryLoading(false);
-  //   }
-  // };
 
   const fetchUpcomingObligations = async () => {
     setObligationsLoading(true);
@@ -143,15 +221,6 @@ export function DashboardPage() {
     }));
   };
 
-  const getFormattedChartData = () => {
-    if (!cashFlowChart || cashFlowChart.length === 0) return [];
-    return cashFlowChart.map(item => ({
-      ...item,
-      date: formatDateForChart(item.date),
-      income: item.income || 0,
-      expense: Math.abs(item.expense || 0)
-    }));
-  };
 
   const formatDateForChart = (dateStr) => {
     if (cashFlowPeriod === 'daily') {
@@ -193,134 +262,310 @@ export function DashboardPage() {
       {/* KPIs Grid */}
       <Grid>
         <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
-          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #c67afdff 0%, #490092ff 100%)' }}>
-            <Group justify="space-between">
-              <div>
-                <Text c="white" size="xs" fw={500}>Patrimônio Líquido</Text>
-                <Text c="white" size="lg" fw={700}>
-                  {formatCurrency(dashboardData?.netWorth)}
-                </Text>
-              </div>
-              <IconWallet size={32} color="white" style={{ opacity: 0.8 }} />
-            </Group>
-          </Card>
+          <UnstyledButton onClick={() => setActiveChartTab('netWorth')} style={{ width: '100%' }}>
+            <Card withBorder radius="md" p="lg" style={{ 
+              background: 'linear-gradient(45deg, #c67afdff 0%, #490092ff 100%)',
+              cursor: 'pointer',
+              transition: 'transform 0.2s ease',
+              ':hover': { transform: 'translateY(-2px)' }
+            }}>
+              <Group justify="space-between">
+                <div>
+                  <Text c="white" size="xs" fw={500}>Patrimônio Líquido</Text>
+                  <Text c="white" size="lg" fw={700}>
+                    {formatCurrency(dashboardData?.netWorth)}
+                  </Text>
+                </div>
+                <IconWallet size={32} color="white" style={{ opacity: 0.8 }} />
+              </Group>
+            </Card>
+          </UnstyledButton>
         </Grid.Col>
 
         <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
-          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #5272ffff 0%, #059669 100%)' }}>
-            <Group justify="space-between">
-              <div>
-                <Text c="white" size="xs" fw={500}>Total Investido</Text>
-                <Text c="white" size="lg" fw={700}>
-                  {formatCurrency(dashboardData?.totalInvested)}
-                </Text>
-              </div>
-              <IconCoins size={32} color="white" style={{ opacity: 0.8 }} />
-            </Group>
-          </Card>
+          <UnstyledButton onClick={() => setActiveChartTab('invested')} style={{ width: '100%' }}>
+            <Card withBorder radius="md" p="lg" style={{ 
+              background: 'linear-gradient(45deg, #5272ffff 0%, #059669 100%)',
+              cursor: 'pointer',
+              transition: 'transform 0.2s ease'
+            }}>
+              <Group justify="space-between">
+                <div>
+                  <Text c="white" size="xs" fw={500}>Total Investido</Text>
+                  <Text c="white" size="lg" fw={700}>
+                    {formatCurrency(dashboardData?.totalInvested)}
+                  </Text>
+                </div>
+                <IconCoins size={32} color="white" style={{ opacity: 0.8 }} />
+              </Group>
+            </Card>
+          </UnstyledButton>
         </Grid.Col>
         
         <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
-          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #f59e0b 0%, #d97706 100%)' }}>
-            <Group justify="space-between">
-              <div>
-                <Text c="white" size="xs" fw={500}>Total em Caixa</Text>
-                <Text c="white" size="lg" fw={700}>
-                  {formatCurrency(dashboardData?.totalCash)}
-                </Text>
-              </div>
-              <IconCash size={32} color="white" style={{ opacity: 0.8 }} />
-            </Group>
-          </Card>
+          <UnstyledButton onClick={() => setActiveChartTab('cash')} style={{ width: '100%' }}>
+            <Card withBorder radius="md" p="lg" style={{ 
+              background: 'linear-gradient(45deg, #f59e0b 0%, #d97706 100%)',
+              cursor: 'pointer',
+              transition: 'transform 0.2s ease'
+            }}>
+              <Group justify="space-between">
+                <div>
+                  <Text c="white" size="xs" fw={500}>Total em Caixa</Text>
+                  <Text c="white" size="lg" fw={700}>
+                    {formatCurrency(dashboardData?.totalCash)}
+                  </Text>
+                </div>
+                <IconCash size={32} color="white" style={{ opacity: 0.8 }} />
+              </Group>
+            </Card>
+          </UnstyledButton>
         </Grid.Col>
 
         <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
-          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #8b5cf6 0%, #7c3aed 100%)' }}>
-            <Group justify="space-between">
-              <div>
-                <Text c="white" size="xs" fw={500}>Bens Físicos</Text>
-                <Text c="white" size="lg" fw={700}>
-                  {formatCurrency(dashboardData?.totalPhysicalAssets || 0)}
-                </Text>
-              </div>
-              <IconBuildingWarehouse size={32} color="white" style={{ opacity: 0.8 }} />
-            </Group>
-          </Card>
+          <UnstyledButton onClick={() => setActiveChartTab('physical')} style={{ width: '100%' }}>
+            <Card withBorder radius="md" p="lg" style={{ 
+              background: 'linear-gradient(45deg, #8b5cf6 0%, #7c3aed 100%)',
+              cursor: 'pointer',
+              transition: 'transform 0.2s ease'
+            }}>
+              <Group justify="space-between">
+                <div>
+                  <Text c="white" size="xs" fw={500}>Bens Físicos</Text>
+                  <Text c="white" size="lg" fw={700}>
+                    {formatCurrency(dashboardData?.totalPhysicalAssets || 0)}
+                  </Text>
+                </div>
+                <IconBuildingWarehouse size={32} color="white" style={{ opacity: 0.8 }} />
+              </Group>
+            </Card>
+          </UnstyledButton>
         </Grid.Col>
 
         <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
-          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #10b981 0%, #059669 100%)' }}>
-            <Group justify="space-between">
-              <div>
-                <Text c="white" size="xs" fw={500}>A Receber (MÊS ATUAL)</Text>
-                <Text c="white" size="lg" fw={700}>
-                  {formatCurrency(dashboardData?.upcomingReceivables?.total)}
-                </Text>
-              </div>
-              <IconCurrencyDollar size={32} color="white" style={{ opacity: 0.8 }} />
-            </Group>
-          </Card>
+          <UnstyledButton onClick={() => setActiveChartTab('cashFlow')} style={{ width: '100%' }}>
+            <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #10b981 0%, #059669 100%)' }}>
+              <Group justify="space-between">
+                <div>
+                  <Text c="white" size="xs" fw={500}>A Receber (MÊS ATUAL)</Text>
+                  <Text c="white" size="lg" fw={700}>
+                    {formatCurrency(dashboardData?.upcomingReceivables?.total)}
+                  </Text>
+                </div>
+                <IconCurrencyDollar size={32} color="white" style={{ opacity: 0.8 }} />
+              </Group>
+            </Card>
+          </UnstyledButton>
         </Grid.Col>
 
         <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
-          <Card withBorder radius="md" p="lg" style={{ background: 'linear-gradient(45deg, #ef4444 0%, #dc2626 100%)' }}>
-            <Group justify="space-between">
-              <div>
-                <Text c="white" size="xs" fw={500}>A Pagar (MÊS ATUAL)</Text>
-                <Text c="white" size="lg" fw={700}>
-                  {formatCurrency(dashboardData?.upcomingPayables?.total)}
-                </Text>
-              </div>
-              <IconReceipt size={32} color="white" style={{ opacity: 0.8 }} />
-            </Group>
-          </Card>
+          <UnstyledButton onClick={() => setActiveChartTab('liabilities')} style={{ width: '100%' }}>
+            <Card withBorder radius="md" p="lg" style={{ 
+              background: 'linear-gradient(45deg, #ef4444 0%, #dc2626 100%)',
+              cursor: 'pointer',
+              transition: 'transform 0.2s ease'
+            }}>
+              <Group justify="space-between">
+                <div>
+                  <Text c="white" size="xs" fw={500}>A Pagar (MÊS ATUAL)</Text>
+                  <Text c="white" size="lg" fw={700}>
+                    {formatCurrency(dashboardData?.upcomingPayables?.total)}
+                  </Text>
+                </div>
+                <Group align="flex-end" gap="xs">
+                  <Stack align="flex-end" gap={2}>
+                    <Text c="white" size="xs" fw={400} style={{ opacity: 0.9 }}>Total de Passivos</Text>
+                    <Text c="white" size="sm" fw={600}>
+                      {formatCurrency(dashboardData?.totalLiabilities || 0)}
+                    </Text>
+                  </Stack>
+                  <IconReceipt size={32} color="white" style={{ opacity: 0.8 }} />
+                </Group>
+              </Group>
+            </Card>
+          </UnstyledButton>
         </Grid.Col>
       </Grid>
 
-      <Grid>
-        <Grid.Col span={{ base: 12, md: 8 }}>
-          {/* Widget Fluxo de Caixa Interativo */}
-          <Card withBorder radius="md" h="100%">
-            <Stack gap="md">
-              <Group justify="space-between">
-                <Group>
-                  <IconCash size={24} />
-                  <Title order={4}>Fluxo de Caixa</Title>
-                </Group>
-                <SegmentedControl
-                  value={cashFlowPeriod}
-                  onChange={handlePeriodChange}
-                  data={[
-                    { label: 'Diário', value: 'daily' },
-                    { label: 'Semanal', value: 'weekly' },
-                    { label: 'Mensal', value: 'monthly' }
-                  ]}
-                  size="sm"
-                />
-              </Group>
-              
-              {chartLoading ? (
+
+      {/* PHASE 4-2: Widget Interativo de Gráficos com Abas */}
+      <Card withBorder radius="md">
+        <Stack gap="md">
+          <Group>
+            <IconTrendingUp size={24} />
+            <Title order={4}>Análise Histórica</Title>
+            <Text size="sm" c="dimmed" ta="center">
+              Clique em um dos KPIs acima para visualizar seus gráficos históricos detalhados
+            </Text>
+          </Group>
+          
+          <Tabs value={activeChartTab} onChange={setActiveChartTab}>
+            <Tabs.List>
+              <Tabs.Tab value="netWorth" leftSection={<IconWallet size="0.8rem" />}>
+                Patrimônio Líquido
+              </Tabs.Tab>
+              <Tabs.Tab value="invested" leftSection={<IconCoins size="0.8rem" />}>
+                Total Investido
+              </Tabs.Tab>
+              <Tabs.Tab value="cash" leftSection={<IconCash size="0.8rem" />}>
+                Total em Caixa
+              </Tabs.Tab>
+              <Tabs.Tab value="physical" leftSection={<IconBuildingWarehouse size="0.8rem" />}>
+                Bens Físicos
+              </Tabs.Tab>
+              <Tabs.Tab value="cashFlow" leftSection={<IconTrendingUp size="0.8rem" />}>
+                Fluxo de Caixa
+              </Tabs.Tab>
+              <Tabs.Tab value="liabilities" leftSection={<IconReceiptTax size="0.8rem" />}>
+                Total de Passivos
+              </Tabs.Tab>
+            </Tabs.List>
+
+            <Tabs.Panel value="netWorth" pt="md">
+              {historyLoading ? (
                 <Stack align="center" py="xl">
                   <Loader size="sm" />
-                  <Text size="sm" c="dimmed">Carregando gráfico...</Text>
+                  <Text size="sm" c="dimmed">Carregando histórico...</Text>
                 </Stack>
-              ) : getFormattedChartData().length > 0 ? (
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={getFormattedChartData()}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" />
-                    <YAxis />
-                    <Tooltip formatter={(value) => formatCurrency(value)} />
-                    <Legend />
-                    <Bar dataKey="income" fill="#10b981" name="Receitas" />
-                    <Bar dataKey="expense" fill="#ef4444" name="Despesas" />
-                  </BarChart>
-                </ResponsiveContainer>
               ) : (
-                <Alert icon={<IconAlertCircle size={16} />} color="blue">
-                  Nenhuma transação encontrada para o período selecionado
-                </Alert>
+                <HistoricalLineChart 
+                  data={snapshotsHistory} 
+                  dataKey="total_net_worth_brl" 
+                  strokeColor="#8b5cf6" 
+                  name="Patrimônio Líquido" 
+                />
               )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="invested" pt="md">
+              {historyLoading ? (
+                <Stack align="center" py="xl">
+                  <Loader size="sm" />
+                  <Text size="sm" c="dimmed">Carregando histórico...</Text>
+                </Stack>
+              ) : (
+                <HistoricalLineChart 
+                  data={snapshotsHistory} 
+                  dataKey="invested_assets_brl" 
+                  strokeColor="#3b82f6" 
+                  name="Ativos Investidos" 
+                />
+              )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="cash" pt="md">
+              {historyLoading ? (
+                <Stack align="center" py="xl">
+                  <Loader size="sm" />
+                  <Text size="sm" c="dimmed">Carregando histórico...</Text>
+                </Stack>
+              ) : (
+                <HistoricalLineChart 
+                  data={snapshotsHistory} 
+                  dataKey="liquid_assets_brl" 
+                  strokeColor="#f59e0b" 
+                  name="Caixa Total" 
+                />
+              )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="physical" pt="md">
+              {historyLoading ? (
+                <Stack align="center" py="xl">
+                  <Loader size="sm" />
+                  <Text size="sm" c="dimmed">Carregando histórico...</Text>
+                </Stack>
+              ) : (
+                <HistoricalLineChart 
+                  data={snapshotsHistory} 
+                  dataKey="total_physical_assets_brl" 
+                  strokeColor="#a855f7" 
+                  name="Patrimônio Físico" 
+                />
+              )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="liabilities" pt="md">
+              {historyLoading ? (
+                <Stack align="center" py="xl">
+                  <Loader size="sm" />
+                  <Text size="sm" c="dimmed">Carregando histórico...</Text>
+                </Stack>
+              ) : (
+                <HistoricalLineChart 
+                  data={snapshotsHistory} 
+                  dataKey="total_liabilities_brl" 
+                  strokeColor="#ef4444" 
+                  name="Passivos" 
+                />
+              )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="cashFlow" pt="md">
+              <Stack gap="md">
+                <Group justify="flex-end">
+                  <SegmentedControl
+                    value={cashFlowPeriod}
+                    onChange={handlePeriodChange}
+                    data={[
+                      { label: 'Diário', value: 'daily' },
+                      { label: 'Semanal', value: 'weekly' },
+                      { label: 'Mensal', value: 'monthly' }
+                    ]}
+                    size="sm"
+                  />
+                </Group>
+                
+                {chartLoading ? (
+                  <Stack align="center" py="xl">
+                    <Loader size="sm" />
+                    <Text size="sm" c="dimmed">Carregando dados...</Text>
+                  </Stack>
+                ) : cashFlowChart.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={350}>
+                    <BarChart data={transformCashFlowData()} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis 
+                        dataKey="period"
+                      />
+                      <YAxis 
+                        tickFormatter={(value) => formatCurrency(value)}
+                      />
+                      <Tooltip 
+                        formatter={(value, name) => [
+                          formatCurrency(value),
+                          name === 'income' ? 'Receitas' : 'Despesas'
+                        ]}
+                        labelFormatter={(value) => `Período: ${value}`}
+                      />
+                      <Legend 
+                        formatter={(value) => value === 'income' ? 'Receitas' : 'Despesas'}
+                      />
+                      <Bar dataKey="income" fill="#10b981" name="income" />
+                      <Bar dataKey="expense" fill="#ef4444" name="expense" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <Alert icon={<IconAlertCircle size={16} />} color="blue">
+                    Nenhum dado de fluxo de caixa encontrado para o período selecionado.
+                  </Alert>
+                )}
+              </Stack>
+            </Tabs.Panel>
+          </Tabs>
+        </Stack>
+      </Card>
+
+      <Grid>
+        <Grid.Col span={{ base: 12, md: 8 }}>
+          {/* Widget Fluxo de Caixa Interativo - Removido pois foi movido para as abas */}
+          <Card withBorder radius="md" h="100%">
+            <Stack gap="md" align="center" justify="center" style={{ minHeight: 300 }}>
+              <IconTrendingUp size={48} style={{ opacity: 0.3 }} />
+              <Text size="lg" fw={500} c="dimmed">Análise Histórica Interativa</Text>
+              <Text size="sm" c="dimmed" ta="center">
+                Clique em um dos KPIs acima para visualizar seus gráficos históricos detalhados
+              </Text>
             </Stack>
           </Card>
         </Grid.Col>
@@ -387,6 +632,7 @@ export function DashboardPage() {
           </Card>
         </Grid.Col>
       </Grid>
+
 
       {/* Widget Portfólio Cripto */}
       <Card withBorder radius="md">
@@ -489,52 +735,6 @@ export function DashboardPage() {
           ) : (
             <Alert icon={<IconAlertCircle size={16} />} color="blue">
               Nenhuma criptomoeda encontrada no portfólio
-            </Alert>
-          )}
-        </Stack>
-      </Card>
-
-      {/* Widget Evolução do Patrimônio */}
-      <Card withBorder radius="md">
-        <Stack gap="md">
-          <Group>
-            <IconTrendingUp size={24} />
-            <Title order={4}>Evolução do Patrimônio Líquido</Title>
-          </Group>
-          
-          {historyLoading ? (
-            <Stack align="center" py="xl">
-              <Loader size="sm" />
-              <Text size="sm" c="dimmed">Carregando histórico...</Text>
-            </Stack>
-          ) : netWorthHistory.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={netWorthHistory}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis 
-                  dataKey="date" 
-                  tickFormatter={(value) => new Date(value).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
-                />
-                <YAxis 
-                  tickFormatter={(value) => formatCurrency(value)}
-                />
-                <Tooltip 
-                  formatter={(value) => [formatCurrency(value), 'Patrimônio Líquido']}
-                  labelFormatter={(value) => new Date(value).toLocaleDateString('pt-BR')}
-                />
-                <Line 
-                  type="monotone" 
-                  dataKey="net_worth" 
-                  stroke="#667eea" 
-                  strokeWidth={3}
-                  dot={{ fill: '#667eea', strokeWidth: 2, r: 4 }}
-                  activeDot={{ r: 6, stroke: '#667eea', strokeWidth: 2, fill: '#fff' }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <Alert icon={<IconAlertCircle size={16} />} color="blue">
-              Nenhum snapshot de patrimônio encontrado. Execute o worker de snapshots para gerar dados históricos.
             </Alert>
           )}
         </Stack>
