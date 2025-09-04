@@ -16,7 +16,8 @@ import {
   Avatar,
   Center,
   Card,
-  ScrollArea
+  ScrollArea,
+  Stepper
 } from '@mantine/core';
 import { Link } from 'react-router-dom';
 import { useForm } from '@mantine/form';
@@ -26,7 +27,11 @@ import {
   IconTrash, 
   IconAlertCircle,
   IconCreditCard,
-  IconRefresh
+  IconRefresh,
+  IconCheck,
+  IconBuildingBank,
+  IconWallet,
+  IconCoin
 } from '@tabler/icons-react';
 import api from '../api';
 import { notifications } from '@mantine/notifications';
@@ -41,6 +46,8 @@ export function AccountsPage() {
   const [syncingAccounts, setSyncingAccounts] = useState(new Set());
   const [imagePreviewUrl, setImagePreviewUrl] = useState('');
   const [imageError, setImageError] = useState(false);
+  const [activeStep, setActiveStep] = useState(0);
+  const [isStepperCompleted, setIsStepperCompleted] = useState(false);
 
   const form = useForm({
     initialValues: {
@@ -408,12 +415,16 @@ export function AccountsPage() {
           setModalOpened(false);
           setImagePreviewUrl('');
           setImageError(false);
+          setActiveStep(0);
+          setIsStepperCompleted(false);
         }}
-        title={editingAccount ? 'Editar Conta' : 'Nova Conta'}
+        title={editingAccount ? 'Editar Conta' : 'Criar Nova Conta'}
         size="lg"
       >
-        <form onSubmit={form.onSubmit(handleSubmit)}>
-          <Stack gap="md">
+        {editingAccount ? (
+          // Modal de edição (formulário original)
+          <form onSubmit={form.onSubmit(handleSubmit)}>
+            <Stack gap="md">
             <Group align="flex-end" gap="md">
               {(imagePreviewUrl || form.values.icon_url) && !imageError && (
                 <Avatar 
@@ -501,27 +512,173 @@ export function AccountsPage() {
               </>
             )}
 
-            <Group justify="flex-end" mt="md">
-              <Button 
-                variant="light" 
-                onClick={() => {
-                  setModalOpened(false);
-                  setImagePreviewUrl('');
-                  setImageError(false);
-                }}
-                disabled={loading}
-              >
-                Cancelar
-              </Button>
-              <Button 
-                type="submit" 
-                loading={loading}
-              >
-                {editingAccount ? 'Atualizar' : 'Criar'} Conta
-              </Button>
-            </Group>
-          </Stack>
-        </form>
+              <Group justify="flex-end" mt="md">
+                <Button 
+                  variant="light" 
+                  onClick={() => {
+                    setModalOpened(false);
+                    setImagePreviewUrl('');
+                    setImageError(false);
+                  }}
+                  disabled={loading}
+                >
+                  Cancelar
+                </Button>
+                <Button 
+                  type="submit" 
+                  loading={loading}
+                >
+                  Atualizar Conta
+                </Button>
+              </Group>
+            </Stack>
+          </form>
+        ) : (
+          // Modal de criação com Stepper
+          <Stepper active={activeStep} onStepClick={setActiveStep}>
+            <Stepper.Step label="Informações Essenciais" description="Nome, instituição e tipo" icon={<IconBuildingBank size={18} />}>
+              <Stack gap="md" mt="md">
+                <TextInput
+                  label="Nome da Conta"
+                  placeholder="Ex: Banco do Brasil - Conta Corrente"
+                  {...form.getInputProps('name')}
+                  required
+                />
+                <TextInput
+                  label="Instituição"
+                  placeholder="Ex: Banco do Brasil, Nubank, Binance"
+                  {...form.getInputProps('institution')}
+                  required
+                />
+                <Select
+                  label="Tipo de Conta"
+                  data={accountTypes}
+                  {...form.getInputProps('type')}
+                  required
+                />
+                <Group justify="flex-end" mt="md">
+                  <Button 
+                    onClick={() => {
+                      if (form.values.name && form.values.institution && form.values.type) {
+                        if (['CARTAO_CREDITO', 'CARTEIRA_CRIPTO'].includes(form.values.type)) {
+                          setActiveStep(1);
+                        } else {
+                          setActiveStep(2);
+                        }
+                      } else {
+                        notifications.show({
+                          title: 'Campos obrigatórios',
+                          message: 'Preencha todos os campos para continuar',
+                          color: 'orange'
+                        });
+                      }
+                    }}
+                  >
+                    Próximo
+                  </Button>
+                </Group>
+              </Stack>
+            </Stepper.Step>
+
+            <Stepper.Step label="Detalhes Específicos" description="Campos condicionais" icon={<IconCreditCard size={18} />}>
+              <Stack gap="md" mt="md">
+                {form.values.type === 'CARTAO_CREDITO' && (
+                  <>
+                    <NumberInput
+                      label="Limite de Crédito Total"
+                      placeholder="0.00"
+                      decimalScale={2}
+                      fixedDecimalScale
+                      {...form.getInputProps('credit_limit')}
+                      required
+                    />
+                    <NumberInput
+                      label="Dia de Vencimento da Fatura"
+                      placeholder="10"
+                      min={1}
+                      max={31}
+                      {...form.getInputProps('invoice_due_day')}
+                      required
+                    />
+                  </>
+                )}
+                {form.values.type === 'CARTEIRA_CRIPTO' && (
+                  <TextInput
+                    label="Endereço Público"
+                    placeholder="0x..."
+                    {...form.getInputProps('public_address')}
+                    description="Endereço da carteira para sincronização automática"
+                  />
+                )}
+                <Group justify="space-between" mt="md">
+                  <Button variant="subtle" onClick={() => setActiveStep(0)}>Voltar</Button>
+                  <Button onClick={() => setActiveStep(2)}>Próximo</Button>
+                </Group>
+              </Stack>
+            </Stepper.Step>
+
+            <Stepper.Step label="Saldo Inicial" description="Valor inicial da conta" icon={<IconCoin size={18} />}>
+              <Stack gap="md" mt="md">
+                <NumberInput
+                  label="Saldo Inicial"
+                  placeholder="0.00"
+                  decimalScale={2}
+                  fixedDecimalScale
+                  {...form.getInputProps('balance')}
+                  description="Valor inicial que a conta possui no momento da criação. Isso criará uma transação de 'Receita' automaticamente."
+                />
+                <TextInput
+                  label="URL do Ícone (opcional)"
+                  placeholder="Ex: https://example.com/logo.png"
+                  description="URL da imagem da instituição"
+                  {...form.getInputProps('icon_url')}
+                  onChange={(event) => {
+                    const url = event.currentTarget.value;
+                    form.setFieldValue('icon_url', url);
+                    setImagePreviewUrl(url);
+                    setImageError(false);
+                  }}
+                />
+                <Group justify="space-between" mt="md">
+                  <Button variant="subtle" onClick={() => setActiveStep(['CARTAO_CREDITO', 'CARTEIRA_CRIPTO'].includes(form.values.type) ? 1 : 0)}>Voltar</Button>
+                  <Button 
+                    loading={loading}
+                    onClick={async () => {
+                      try {
+                        await handleSubmit(form.values);
+                        setActiveStep(3); // Ir para tela de sucesso
+                      } catch (error) {
+                        console.error('Erro ao criar conta:', error);
+                      }
+                    }}
+                  >
+                    Criar Conta
+                  </Button>
+                </Group>
+              </Stack>
+            </Stepper.Step>
+
+            <Stepper.Completed>
+              <Stack align="center" gap="md" mt="md">
+                <IconCheck size={48} style={{ color: 'green' }} />
+                <Text size="lg" fw={600}>Conta criada com sucesso!</Text>
+                <Text size="sm" c="dimmed" ta="center">
+                  Sua conta "{form.values.name}" foi criada e está pronta para uso.
+                </Text>
+                <Button 
+                  onClick={() => {
+                    setModalOpened(false);
+                    setActiveStep(0);
+                    form.reset();
+                  }}
+                  mt="md"
+                >
+                  Finalizar
+                </Button>
+              </Stack>
+            </Stepper.Completed>
+          </Stepper>
+        )}
       </Modal>
     </div>
   );

@@ -3,9 +3,11 @@ import asyncio
 import time
 import logging
 import os
-from typing import Dict, List
-from .database_service import DatabaseService
+from typing import Dict, List, Optional
+from decimal import Decimal
 from datetime import datetime
+from .database_service import DatabaseService
+from .historical_data_service import HistoricalDataService
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,7 @@ class PriceService:
         self.alpha_vantage_base = "https://www.alphavantage.co/query"
         self.db_service = db_service
         self._client = None
+        self.historical_service = HistoricalDataService(db_service)
         
     async def _get_client(self) -> httpx.AsyncClient:
         """Obtém ou cria o cliente HTTP assíncrono"""
@@ -145,6 +148,81 @@ class PriceService:
         except Exception as e:
             logger.error(f"Unexpected error fetching USD to BRL rate: {e}")
             return 0.0
+
+    def get_historical_crypto_price_in_brl(self, api_id: str, target_datetime: datetime) -> Optional[Decimal]:
+        """
+        Busca o preço histórico de uma criptomoeda em BRL para um momento específico.
+        
+        Args:
+            api_id: Identificador da API do CoinGecko (ex: 'bitcoin', 'ethereum')
+            target_datetime: Data/hora específica para buscar o preço
+            
+        Returns:
+            Preço em BRL como Decimal, ou None se não encontrado
+        """
+        try:
+            logger.info(f"Buscando preço histórico em BRL: {api_id} em {target_datetime}")
+            
+            # Mapear api_id para symbol (necessário para HistoricalDataService)
+            api_id_to_symbol = {
+                'bitcoin': 'BTCUSDT',
+                'ethereum': 'ETHUSDT',
+                'cardano': 'ADAUSDT',
+                'binancecoin': 'BNBUSDT',
+                'ripple': 'XRPUSDT',
+                'solana': 'SOLUSDT',
+                'polkadot': 'DOTUSDT',
+                'dogecoin': 'DOGEUSDT',
+                'avalanche-2': 'AVAXUSDT',
+                'chainlink': 'LINKUSDT',
+                'tether': 'USDT'  # Importante para conversão USD→BRL
+            }
+            
+            symbol = api_id_to_symbol.get(api_id)
+            if not symbol:
+                logger.error(f"Mapeamento não encontrado para api_id: {api_id}")
+                return None
+            
+            # 1. Buscar preço histórico do ativo em USD
+            logger.info(f"Chamando historical_service.get_historical_price_at({symbol}, {target_datetime})")
+            asset_price_usd = self.historical_service.get_historical_price_at(symbol, target_datetime)
+            logger.info(f"Resultado asset_price_usd: {asset_price_usd}")
+            
+            if asset_price_usd is None:
+                logger.warning(f"Preço histórico em USD não encontrado para {api_id}")
+                return None
+            
+            # 2. Buscar preço histórico do USDT em BRL na mesma data
+            logger.info(f"Chamando historical_service.get_historical_price_at('USDT', {target_datetime})")
+            usdt_price_brl = self.historical_service.get_historical_price_at('USDT', target_datetime)
+            logger.info(f"Resultado usdt_price_brl: {usdt_price_brl}")
+            
+            if usdt_price_brl is None:
+                # Fallback: tentar buscar taxa USD/BRL atual se a data for recente
+                logger.warning(f"Preço histórico do USDT não encontrado, tentando taxa atual...")
+                current_rate = asyncio.run(self.get_usd_to_brl_rate())
+                if current_rate > 0:
+                    usdt_price_brl = current_rate
+                    logger.info(f"Usando taxa USD/BRL atual como fallback: {current_rate}")
+                else:
+                    logger.error("Não foi possível obter taxa USD/BRL")
+                    return None
+            
+            # 3. Calcular preço em BRL
+            # Para USDT: preço em USD é sempre ~1.0, então usamos diretamente o preço BRL
+            if api_id == 'tether':
+                price_brl = Decimal(str(usdt_price_brl))
+            else:
+                # Para outros ativos: preço_USD * taxa_USD_BRL
+                price_brl = Decimal(str(asset_price_usd)) * Decimal(str(usdt_price_brl))
+            
+            logger.info(f"Preço histórico calculado: {api_id} = R$ {price_brl} (${asset_price_usd} * {usdt_price_brl})")
+            
+            return price_brl
+            
+        except Exception as e:
+            logger.error(f"Erro ao buscar preço histórico em BRL: {str(e)}")
+            return None
     
     def _fetch_price_alpha_vantage(self, symbol: str) -> dict:
         """

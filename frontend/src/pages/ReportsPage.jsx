@@ -31,7 +31,10 @@ import {
   IconBuildingWarehouse,
   IconHome,
   IconCar,
-  IconDeviceDesktop
+  IconDeviceDesktop,
+  IconCheck,
+  IconX,
+  IconCamera
 } from '@tabler/icons-react';
 import { 
   LineChart, 
@@ -144,6 +147,58 @@ export function ReportsPage() {
     }
   };
 
+  // Gerar snapshot financeiro
+  const generateSnapshot = async () => {
+    const notificationId = 'generate-snapshot-' + Date.now();
+    setGeneratingSnapshot(true);
+    
+    // Mostrar notificação de loading
+    notifications.show({
+      id: notificationId,
+      loading: true,
+      title: 'Gerando snapshot financeiro...',
+      message: 'Coletando dados de todas as contas e ativos. Isso pode demorar alguns instantes.',
+      autoClose: false,
+      withCloseButton: false,
+    });
+
+    try {
+      const response = await api.post('/reports/snapshots/generate');
+      
+      // Atualizar notificação para sucesso
+      notifications.update({
+        id: notificationId,
+        color: 'green',
+        title: 'Snapshot gerado com sucesso!',
+        message: 'Os dados financeiros foram atualizados. Os relatórios já refletem as informações mais recentes.',
+        icon: <IconCheck size={18} />,
+        autoClose: 5000,
+        loading: false,
+      });
+
+      // Recarregar dados dos relatórios
+      await fetchSnapshotsData();
+      await fetchExpenseAnalysis();
+      await fetchPhysicalAssetsData();
+      
+    } catch (error) {
+      console.error('Erro ao gerar snapshot:', error);
+      
+      // Atualizar notificação para erro
+      notifications.update({
+        id: notificationId,
+        color: 'red',
+        title: 'Erro ao gerar snapshot',
+        message: error.response?.data?.detail || 'Não foi possível gerar o snapshot financeiro. Tente novamente.',
+        icon: <IconX size={18} />,
+        autoClose: 7000,
+        loading: false,
+      });
+    } finally {
+      setGeneratingSnapshot(false);
+    }
+  };
+
   // Buscar análise de despesas
   const fetchExpenseAnalysis = async () => {
     try {
@@ -157,37 +212,6 @@ export function ReportsPage() {
     } catch (error) {
       console.error('Erro ao buscar análise de despesas:', error);
       setExpenseAnalysis(null);
-    }
-  };
-
-  // Gerar snapshot manual
-  const generateSnapshot = async () => {
-    setGeneratingSnapshot(true);
-    try {
-      const response = await api.post('/reports/snapshots/generate');
-      
-      if (response.data.success) {
-        notifications.show({
-          title: 'Sucesso!',
-          message: 'Snapshot financeiro gerado com sucesso',
-          color: 'green'
-        });
-        
-        // Recarregar dados após gerar snapshot
-        fetchSnapshotsData();
-        fetchExpenseAnalysis();
-      } else {
-        throw new Error('Falha ao gerar snapshot');
-      }
-    } catch (error) {
-      console.error('Erro ao gerar snapshot:', error);
-      notifications.show({
-        title: 'Erro',
-        message: error.response?.data?.detail || 'Não foi possível gerar o snapshot',
-        color: 'red'
-      });
-    } finally {
-      setGeneratingSnapshot(false);
     }
   };
 

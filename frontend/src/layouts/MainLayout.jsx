@@ -1,4 +1,4 @@
-import { AppShell, Title, NavLink, Group, Box } from '@mantine/core';
+import { AppShell, Title, NavLink, Group, Box, Button, Affix, Transition, ActionIcon, Indicator, Avatar } from '@mantine/core';
 import { 
   IconWallet, 
   IconChartCandle, 
@@ -21,9 +21,13 @@ import {
   IconBuildingWarehouse,
   IconTargetArrow,
   IconPigMoney,
-  IconReceiptTax
+  IconReceiptTax,
+  IconSearch,
+  IconArrowUp,
+  IconBell
 } from '@tabler/icons-react';
 import { Outlet, Link, useNavigate } from 'react-router-dom';
+import { Spotlight, spotlight } from '@mantine/spotlight';
 import { useState, useEffect, useCallback } from 'react';
 import { useAccount, useBalance } from 'wagmi';
 import { removeAuthToken } from '../utils/auth';
@@ -34,6 +38,95 @@ export function MainLayout() {
   const navigate = useNavigate();
   const { address, isConnected } = useAccount();
   const { data: balance } = useBalance({ address });
+  const [scrolled, setScrolled] = useState(false);
+
+  // Spotlight actions
+  const actions = [
+    {
+      id: 'dashboard',
+      label: 'Dashboard',
+      description: 'Página inicial com resumo geral',
+      leftSection: <IconHome size={18} />,
+      onClick: () => { navigate('/'); spotlight.close(); }
+    },
+    {
+      id: 'portfolio',
+      label: 'Portfólio',
+      description: 'Visualizar portfólio de investimentos',
+      leftSection: <IconChartPie size={18} />,
+      onClick: () => { navigate('/portfolio'); spotlight.close(); }
+    },
+    {
+      id: 'patrimonio',
+      label: 'Bens Físicos',
+      description: 'Gerenciar patrimônio físico',
+      leftSection: <IconBuildingWarehouse size={18} />,
+      onClick: () => { navigate('/patrimonio'); spotlight.close(); }
+    },
+    {
+      id: 'accounts',
+      label: 'Contas',
+      description: 'Gerenciar contas financeiras',
+      leftSection: <IconWallet size={18} />,
+      onClick: () => { navigate('/accounts'); spotlight.close(); }
+    },
+    {
+      id: 'assets',
+      label: 'Ativos',
+      description: 'Gerenciar ativos financeiros',
+      leftSection: <IconChartCandle size={18} />,
+      onClick: () => { navigate('/assets'); spotlight.close(); }
+    },
+    {
+      id: 'transactions',
+      label: 'Lançamentos',
+      description: 'Visualizar transações financeiras',
+      leftSection: <IconReceipt size={18} />,
+      onClick: () => { navigate('/transactions'); spotlight.close(); }
+    },
+    {
+      id: 'obligations',
+      label: 'Fluxo de Caixa',
+      description: 'Gerenciar obrigações e recorrências',
+      leftSection: <IconCalendarEvent size={18} />,
+      onClick: () => { navigate('/obligations'); spotlight.close(); }
+    },
+    {
+      id: 'reports',
+      label: 'Relatórios',
+      description: 'Visualizar relatórios financeiros',
+      leftSection: <IconReportAnalytics size={18} />,
+      onClick: () => { navigate('/reports'); spotlight.close(); }
+    },
+    {
+      id: 'wallets',
+      label: 'Carteiras Web3',
+      description: 'Gerenciar carteiras de criptomoedas',
+      leftSection: <IconWallet size={18} />,
+      onClick: () => { navigate('/wallets'); spotlight.close(); }
+    },
+    {
+      id: 'vaults',
+      label: 'Strategy Vaults',
+      description: 'Gerenciar cofres de estratégias',
+      leftSection: <IconLockOpen size={18} />,
+      onClick: () => { navigate('/vaults'); spotlight.close(); }
+    },
+    {
+      id: 'strategies',
+      label: 'Estratégias',
+      description: 'Configurar estratégias de trading',
+      leftSection: <IconChartLine size={18} />,
+      onClick: () => { navigate('/strategies'); spotlight.close(); }
+    },
+    {
+      id: 'backtesting',
+      label: 'Backtesting com IA',
+      description: 'Testar estratégias com dados históricos',
+      leftSection: <IconHistory size={18} />,
+      onClick: () => { navigate('/backtesting'); spotlight.close(); }
+    }
+  ];
   
   // Estado centralizado das carteiras do usuário
   const [userWallets, setUserWallets] = useState([]);
@@ -61,6 +154,16 @@ export function MainLayout() {
     fetchUserWallets();
   }, [fetchUserWallets]);
 
+  // Controlar exibição do botão "voltar ao topo"
+  useEffect(() => {
+    const handleScroll = () => {
+      setScrolled(window.scrollY > 300);
+    };
+
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
   const handleLogout = () => {
     removeAuthToken();
     navigate('/login');
@@ -79,19 +182,25 @@ export function MainLayout() {
         <Group justify="space-between" h="100%" px="md" align="center">
           <Title order={3}>finances.mine</Title>
           <Group gap="md">
-            {isConnected && address && (
-              <Box style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: '12px', color: '#666' }}>
-                  {address.substring(0, 6)}...{address.substring(address.length - 4)}
-                </div>
-                <div style={{ fontSize: '14px', fontWeight: 500 }}>
-                  {balance ? `${parseFloat(balance.formatted).toFixed(4)} ${balance.symbol}` : 'Loading...'}
-                </div>
-              </Box>
-            )}
+            <Button
+              variant="default"
+              leftSection={<IconSearch size={16} />}
+              onClick={() => spotlight.open()}
+            >
+              Buscar (Ctrl + K)
+            </Button>
+            
             <Box>
               <appkit-button />
             </Box>
+            
+            <Indicator color="red" size={8} offset={5}>
+              <ActionIcon variant="light" size="lg">
+                <IconBell size={18} />
+              </ActionIcon>
+            </Indicator>
+            
+            <Avatar radius="xl" size="sm">EC</Avatar>
           </Group>
         </Group>
       </AppShell.Header>
@@ -137,6 +246,9 @@ export function MainLayout() {
           <NavLink label="Orçamentos" disabled leftSection={<IconPigMoney size="1rem" />} />
           <NavLink label="Centro Fiscal (Impostos)" disabled leftSection={<IconReceiptTax size="1rem" />} />
         </NavLink>
+
+        {/* mantine-showcase */}
+        <NavLink label="Mantine Showcase" leftSection={<IconCreditCard size="1rem" />} component={Link} to="/mantine-showcase" />
         
         <NavLink 
           label="Sair" 
@@ -154,6 +266,31 @@ export function MainLayout() {
           walletsLoaded={walletsLoaded}
         />
         <Outlet />
+        
+        <Affix position={{ bottom: 20, right: 20 }}>
+          <Transition transition="slide-up" mounted={scrolled}>
+            {(transitionStyles) => (
+              <ActionIcon
+                style={transitionStyles}
+                variant="filled"
+                size="lg"
+                radius="xl"
+                color="blue"
+                onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+              >
+                <IconArrowUp size={18} />
+              </ActionIcon>
+            )}
+          </Transition>
+        </Affix>
+        
+        <Spotlight
+          actions={actions}
+          nothingFound="Nenhum resultado encontrado"
+          searchProps={{
+            placeholder: 'Buscar páginas e funcionalidades...',
+          }}
+        />
       </AppShell.Main>
     </AppShell>
   );

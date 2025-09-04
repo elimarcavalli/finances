@@ -11,7 +11,11 @@ import {
   Menu,
   RangeSlider,
   Button,
-  Center
+  Center,
+  Card,
+  Pagination,
+  Select,
+  Title
 } from '@mantine/core';
 import {
   IconFilter,
@@ -26,12 +30,17 @@ export function AdvancedTable({
   columns = [], 
   footerCalculations = null,
   emptyStateText = "Nenhum dado encontrado",
-  emptyStateDescription = ""
+  emptyStateDescription = "",
+  title = "",
+  pagination = false,
+  pageSize: initialPageSize = 25
 }) {
   const [sortField, setSortField] = useState(null);
   const [sortDirection, setSortDirection] = useState('desc');
   const [filters, setFilters] = useState({});
   const [openedPopovers, setOpenedPopovers] = useState({});
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(initialPageSize);
 
   // Inicializar filtros baseado nas colunas
   const initializeFilters = useCallback(() => {
@@ -127,6 +136,13 @@ export function AdvancedTable({
       }
     });
   }, [data, sortField, sortDirection, applyFilters]);
+
+  // Dados paginados
+  const paginatedData = useMemo(() => {
+    if (!pagination) return processedData;
+    
+    return processedData.slice((page - 1) * pageSize, page * pageSize);
+  }, [processedData, page, pageSize, pagination]);
 
   // Limpar filtros
   const clearFilters = () => {
@@ -416,11 +432,22 @@ export function AdvancedTable({
     return values;
   }, [footerCalculations, processedData]);
 
+  // Reset page quando filtros mudarem
+  React.useEffect(() => {
+    setPage(1);
+  }, [filters]);
+
   return (
-    <div className="advanced-table-container">
+    <Card withBorder radius="lg" p={13} className="advanced-table-container">
+      {title && (
+        <Card.Section withBorder inheritPadding py="md">
+          <Title order={4}>{title}</Title>
+        </Card.Section>
+      )}
+      
       {/* Cabeçalho fixo com indicador de filtros ativos */}
       {hasActiveFilters && (
-        <div className="advanced-table-filters-header">
+        <Card.Section p="xs" >
           <Group justify="center">
             <Group gap="xs">
               <Text size="sm" c="dimmed">
@@ -435,10 +462,10 @@ export function AdvancedTable({
               </Button>
             </Group>
           </Group>
-        </div>
+        </Card.Section>
       )}
 
-      <div className="advanced-table-content">
+      <div className="advanced-table-content" style={{ position: 'relative' }}>
         <ScrollArea className="advanced-table-scroll">
           <Table striped highlightOnHover>
           <Table.Thead style={{ position: 'sticky', top: 0, zIndex: 1, backgroundColor: '#404040ff' }}> 
@@ -453,7 +480,7 @@ export function AdvancedTable({
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
-            {processedData.length === 0 ? (
+            {(pagination ? paginatedData : processedData).length === 0 ? (
               <Table.Tr>
                 <Table.Td colSpan={columns.length} style={{ textAlign: 'center', padding: '2rem' }}>
                   <Center>
@@ -469,7 +496,7 @@ export function AdvancedTable({
                 </Table.Td>
               </Table.Tr>
             ) : (
-              processedData.map((row, index) => (
+              (pagination ? paginatedData : processedData).map((row, index) => (
                 <Table.Tr key={row.id || index}>
                   {columns.map((column) => (
                     <Table.Td key={column.accessor} ta={column.align || 'left'}>
@@ -511,6 +538,43 @@ export function AdvancedTable({
         )}
       </div>
 
-    </div>
+      {/* Paginação */}
+      {pagination && processedData.length > 0 && (
+        <Card.Section withBorder inheritPadding py="xs">
+          <Group justify="space-between" align="center">
+            <Group gap="sm">
+              <Text size="sm" c="dimmed">
+                Registros por página:
+              </Text>
+              <Select
+                value={pageSize.toString()}
+                onChange={(value) => {
+                  setPageSize(parseInt(value));
+                  setPage(1);
+                }}
+                data={[
+                  { value: '5', label: '5' },
+                  { value: '10', label: '10' },
+                  { value: '25', label: '25' },
+                  { value: '50', label: '50' },
+                  { value: '100', label: '100' }
+                ]}
+                w={80}
+                size="xs"
+              />
+              <Text size="sm" c="dimmed">
+                Exibindo {((page - 1) * pageSize) + 1} a {Math.min(page * pageSize, processedData.length)} de {processedData.length} registros
+              </Text>
+            </Group>
+            <Pagination
+              total={Math.ceil(processedData.length / pageSize)}
+              value={page}
+              onChange={setPage}
+              size="sm"
+            />
+          </Group>
+        </Card.Section>
+      )}
+    </Card>
   );
 }

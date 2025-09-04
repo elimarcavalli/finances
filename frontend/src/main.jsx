@@ -13,6 +13,7 @@ import App from './App';
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 import '@mantine/dates/styles.css';
+import '@mantine/spotlight/styles.css';
 import 'dayjs/locale/pt-br';
 
 const projectId = '2f05ae7f1116030fde2d36508f472bfb';

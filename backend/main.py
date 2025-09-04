@@ -513,6 +513,17 @@ class AssetMovementUpdate(BaseModel):
     fee: Optional[float] = None
     notes: Optional[str] = None
 
+class SwapMovementCreate(BaseModel):
+    """Modelo para criação de operação de SWAP entre criptoativos"""
+    account_id: int = Field(..., description="ID da conta onde ocorreu o SWAP")
+    from_asset_id: int = Field(..., description="ID do ativo vendido (SWAP_OUT)")
+    to_asset_id: int = Field(..., description="ID do ativo comprado (SWAP_IN)")
+    from_quantity: float = Field(..., gt=0, description="Quantidade do ativo vendido")
+    to_quantity: float = Field(..., gt=0, description="Quantidade do ativo comprado")
+    movement_date: datetime = Field(..., description="Data e hora da operação de SWAP")
+    fee: Optional[float] = Field(0.00, ge=0, description="Taxa total da operação")
+    notes: Optional[str] = Field(None, description="Observações sobre o SWAP")
+
 class WalletAccountCreate(BaseModel):
     public_address: str
     wallet_name: str
@@ -1927,6 +1938,44 @@ async def delete_asset_movement(movement_id: int, current_user: dict = Depends(g
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/portfolio/movements/swap")
+async def create_swap_movement(swap: SwapMovementCreate, current_user: dict = Depends(get_current_user)):
+    """
+    Criar uma nova operação de SWAP entre criptoativos de forma atômica.
+    
+    Esta operação registra simultaneamente:
+    - SWAP_OUT: Venda do ativo original
+    - SWAP_IN: Compra do novo ativo
+    
+    O custo de aquisição é calculado usando preços históricos para garantir precisão.
+    """
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        # Converter modelo Pydantic para dict
+        swap_data = swap.dict()
+        
+        # Executar operação de SWAP atômica
+        result = portfolio_service.add_swap_movement(user_id, swap_data)
+        
+        return {
+            "success": True,
+            "message": "Operação de SWAP realizada com sucesso",
+            "data": result
+        }
+        
+    except ValueError as e:
+        # Erros de validação (dados inválidos)
+        logger.warning(f"Erro de validação no SWAP: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    except Exception as e:
+        # Erros internos (banco de dados, APIs, etc.)
+        logger.error(f"Erro interno no SWAP: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
 # @app.get("/summary/net-worth-history")
 # async def get_net_worth_history(current_user: dict = Depends(get_current_user), days_limit: int = 365):

@@ -21,7 +21,8 @@ import {
   Grid,
   Textarea,
   Card,
-  Switch
+  Switch,
+  Autocomplete
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
@@ -74,6 +75,10 @@ export function ObligationsPage() {
   const [cancelingObligation, setCancelingObligation] = useState(null);
   
   const [error, setError] = useState('');
+
+  // Estados para Autocomplete no modal de liquidação
+  const [fromAccountValue, setFromAccountValue] = useState('');
+  const [toAccountValue, setToAccountValue] = useState('');
 
   // Form para obrigações
   const obligationForm = useForm({
@@ -537,6 +542,12 @@ export function ObligationsPage() {
       // Usar contas pré-definidas da recurring rule
       fromAccountId = item.from_account_id ? item.from_account_id.toString() : '';
       toAccountId = item.to_account_id ? item.to_account_id.toString() : '';
+      
+      // Atualizar valores dos Autocompletes
+      const fromAccount = accounts.find(acc => acc.id.toString() === fromAccountId);
+      const toAccount = accounts.find(acc => acc.id.toString() === toAccountId);
+      setFromAccountValue(fromAccount ? fromAccount.name : '');
+      setToAccountValue(toAccount ? toAccount.name : '');
       
       // Calcular data sugerida baseada na start_date
       if (item.start_date) {
@@ -1069,37 +1080,29 @@ export function ObligationsPage() {
 
       {activeTab === 'RECURRING' ? (
         // Tabela de Regras de Recorrência
-        <div className="page-table-container">
-          {/* <div style={{ padding: '1rem 1rem 0 1rem', background: 'var(--mantine-color-body)' }}>
-            <Title order={4}>Regras de Recorrência</Title>
-          </div> */}
-          <AdvancedTable
-            data={recurringRules}
-            columns={recurringRulesColumns}
-            footerCalculations={recurringRulesFooterCalculations}
-            emptyStateText={loading ? "Carregando regras..." : "Nenhuma regra de recorrência encontrada"}
-            emptyStateDescription="Adicione sua primeira regra de recorrência"
-          />
-        </div>
+        <AdvancedTable
+          title="Regras de Recorrência"
+          data={recurringRules}
+          columns={recurringRulesColumns}
+          footerCalculations={recurringRulesFooterCalculations}
+          emptyStateText={loading ? "Carregando regras..." : "Nenhuma regra de recorrência encontrada"}
+          emptyStateDescription="Adicione sua primeira regra de recorrência"
+          pagination
+        />
       ) : (
         // Tabela de Obrigações
-        <div className="page-table-container">
-          <div style={{ padding: '1rem 1rem 0 1rem', background: 'var(--mantine-color-body)' }}>
-            <Title order={4}>
-              {activeTab === 'PAYABLE' ? 'Contas a Pagar' : 
-               activeTab === 'CREDIT_CARD' ? 'Faturas de Cartão de Crédito' : 
-               activeTab === 'TRANSFERENCIA' ? 'Transferências a Realizar' :
-               'Contas a Receber'}
-            </Title>
-          </div>
-          <AdvancedTable
-            data={filteredObligations}
-            columns={obligationsColumns}
-            footerCalculations={obligationsFooterCalculations}
-            emptyStateText={loading ? "Carregando obrigações..." : "Nenhuma obrigação encontrada"}
-            emptyStateDescription="Adicione sua primeira obrigação"
-          />
-        </div>
+        <AdvancedTable
+          title={activeTab === 'PAYABLE' ? 'Contas a Pagar' : 
+                 activeTab === 'CREDIT_CARD' ? 'Faturas de Cartão de Crédito' : 
+                 activeTab === 'TRANSFERENCIA' ? 'Transferências a Realizar' :
+                 'Contas a Receber'}
+          data={filteredObligations}
+          columns={obligationsColumns}
+          footerCalculations={obligationsFooterCalculations}
+          emptyStateText={loading ? "Carregando obrigações..." : "Nenhuma obrigação encontrada"}
+          emptyStateDescription="Adicione sua primeira obrigação"
+          pagination
+        />
       )}
 
       {/* Modal para Obrigação */}
@@ -1378,57 +1381,90 @@ export function ObligationsPage() {
           setSettleModalOpened(false);
           settleForm.reset();
           setSettlingItem(null);
+          setFromAccountValue('');
+          setToAccountValue('');
         }}
         title={settlingItem && settlingItem.hasOwnProperty('frequency') ? "Liquidar Recorrência" : "Liquidar Obrigação"}
-        size="md"
+        size="lg"
       >
         {settlingItem && (
           <form onSubmit={settleForm.onSubmit(handleSettleItem)}>
             <Stack>
-              <Text>
-                <strong>{settlingItem.hasOwnProperty('frequency') ? 'Recorrência' : 'Obrigação'}:</strong> {settlingItem.description}
-              </Text>
-              <Text>
-                <strong>Valor:</strong> R$ {parseFloat(settlingItem.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-              </Text>
-              {settlingItem.category && (
-                <Text>
-                  <strong>Categoria:</strong> {settlingItem.category}
-                </Text>
-              )}
-              {settlingItem.entity_name && (
-                <Text>
-                  <strong>Entidade:</strong> {settlingItem.entity_name}
-                </Text>
-              )}
-              {settlingItem.hasOwnProperty('frequency') && (
-                <Text>
-                  <strong>Tipo:</strong> {settlingItem.type === 'PAYABLE' ? 'A Pagar' : 'A Receber'}
-                </Text>
-              )}
+              {/* Card com informações da obrigação/recorrência */}
+              <Card withBorder p="md" mb="md">
+                <Stack gap="sm">
+                  <Text size="lg" fw={600}>
+                    {settlingItem.hasOwnProperty('frequency') ? 'Recorrência' : 'Obrigação'}: {settlingItem.description}
+                  </Text>
+                  <Group>
+                    <Text size="md" fw={500}>Valor:</Text>
+                    <Text size="md" c={settlingItem.type === 'PAYABLE' ? 'red' : settlingItem.type === 'RECEIVABLE' ? 'green' : 'blue'}>
+                      R$ {parseFloat(settlingItem.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                    </Text>
+                  </Group>
+                  {settlingItem.category && (
+                    <Group>
+                      <Text size="sm">Categoria:</Text>
+                      <Text size="sm" fw={500}>{settlingItem.category}</Text>
+                    </Group>
+                  )}
+                  {settlingItem.entity_name && (
+                    <Group>
+                      <Text size="sm">Entidade:</Text>
+                      <Text size="sm" fw={500}>{settlingItem.entity_name}</Text>
+                    </Group>
+                  )}
+                  {settlingItem.due_date && !settlingItem.hasOwnProperty('frequency') && (
+                    <Group>
+                      <Text size="sm">Vencimento:</Text>
+                      <Text size="sm" fw={500}>{new Date(settlingItem.due_date).toLocaleDateString('pt-BR')}</Text>
+                    </Group>
+                  )}
+                </Stack>
+              </Card>
 
-              <Select
+              <Autocomplete
                 label="Conta de Origem (opcional)"
-                placeholder="Selecione a conta de origem"
-                data={accounts.map(account => ({
-                  value: account.id.toString(),
-                  label: `${account.name} (${account.type})`
-                }))}
-                {...settleForm.getInputProps('from_account_id')}
-                clearable
+                placeholder="Digite ou selecione a conta de origem"
+                data={accounts
+                  .filter(account => account.name.toLowerCase().includes(fromAccountValue.toLowerCase()))
+                  .map(account => account.name)
+                }
+                value={fromAccountValue}
+                onChange={(value) => setFromAccountValue(value)}
+                onOptionSubmit={(value) => {
+                  setFromAccountValue(value);
+                  const account = accounts.find(acc => acc.name === value);
+                  settleForm.setFieldValue('from_account_id', account ? account.id.toString() : '');
+                }}
                 description="Conta que terá o valor debitado"
+                clearable
+                onClear={() => {
+                  setFromAccountValue('');
+                  settleForm.setFieldValue('from_account_id', '');
+                }}
               />
 
-              <Select
+              <Autocomplete
                 label="Conta de Destino (opcional)"
-                placeholder="Selecione a conta de destino"
-                data={accounts.map(account => ({
-                  value: account.id.toString(),
-                  label: `${account.name} (${account.type})`
-                }))}
-                {...settleForm.getInputProps('to_account_id')}
-                clearable
+                placeholder="Digite ou selecione a conta de destino"
+                data={accounts
+                  .filter(account => account.name.toLowerCase().includes(toAccountValue.toLowerCase()))
+                  .map(account => account.name)
+                }
+                value={toAccountValue}
+                onChange={(value) => setToAccountValue(value)}
+                onOptionSubmit={(value) => {
+                  setToAccountValue(value);
+                  const account = accounts.find(acc => acc.name === value);
+                  settleForm.setFieldValue('to_account_id', account ? account.id.toString() : '');
+                }}
                 description="Conta que terá o valor creditado"
+                clearable
+                onClear={() => {
+                  setToAccountValue('');
+                  settleForm.setFieldValue('to_account_id', '');
+                }}
               />
 
               <DatePickerInput
@@ -1448,6 +1484,8 @@ export function ObligationsPage() {
                     setSettleModalOpened(false);
                     settleForm.reset();
                     setSettlingItem(null);
+                    setFromAccountValue('');
+                    setToAccountValue('');
                   }}
                 >
                   Cancelar

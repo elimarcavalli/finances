@@ -4,6 +4,9 @@ import mysql.connector
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from typing import List, Dict, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 class PortfolioService:
     def __init__(self, db_service: DatabaseService, price_service: PriceService):
@@ -42,6 +45,200 @@ class PortfolioService:
             raise Exception(f"Erro ao adicionar movimento: {err}")
         finally:
             cursor.close()
+
+    def add_swap_movement(self, user_id: int, swap_data: dict) -> dict:
+        """
+        Adiciona uma operação de SWAP atômica entre dois criptoativos.
+        
+        Args:
+            user_id: ID do usuário
+            swap_data: Dict contendo dados do SWAP:
+                - from_asset_id: ID do ativo vendido
+                - to_asset_id: ID do ativo comprado  
+                - from_quantity: Quantidade vendida
+                - to_quantity: Quantidade comprada
+                - movement_date: Data/hora da operação
+                - account_id: ID da conta
+                - fee: Taxa da operação (opcional)
+                - notes: Observações (opcional)
+                
+        Returns:
+            Dict com IDs dos movimentos criados
+        """
+        logger.info(f"Iniciando operação de SWAP para usuário {user_id}")
+        
+        # Validações de entrada
+        required_fields = ['from_asset_id', 'to_asset_id', 'from_quantity', 'to_quantity', 'movement_date', 'account_id']
+        for field in required_fields:
+            if field not in swap_data or swap_data[field] is None:
+                raise ValueError(f"Campo obrigatório ausente: {field}")
+        
+        if swap_data['from_asset_id'] == swap_data['to_asset_id']:
+            raise ValueError("Não é possível fazer SWAP do mesmo ativo")
+        
+        if Decimal(str(swap_data['from_quantity'])) <= 0 or Decimal(str(swap_data['to_quantity'])) <= 0:
+            raise ValueError("Quantidades devem ser positivas")
+        
+        # Garantir conexão ativa para transação ACID
+        self.db_service.ensure_connection()
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        
+        try:
+            # INÍCIO DA TRANSAÇÃO ATÔMICA
+            # Verificar se já existe uma transação ativa
+            if not self.db_service.connection.in_transaction:
+                self.db_service.connection.start_transaction()
+            
+            # 1. Buscar dados dos ativos para validação e cálculo de preços históricos
+            cursor.execute("""
+                SELECT id, symbol, name, asset_class, price_api_identifier 
+                FROM assets 
+                WHERE id IN (%s, %s)
+            """, (swap_data['from_asset_id'], swap_data['to_asset_id']))
+            
+            assets = cursor.fetchall()
+            if len(assets) != 2:
+                raise ValueError("Um ou ambos os ativos não foram encontrados")
+            
+            # Organizar assets por ID para facilitar acesso
+            assets_dict = {asset['id']: asset for asset in assets}
+            from_asset = assets_dict[swap_data['from_asset_id']]
+            to_asset = assets_dict[swap_data['to_asset_id']]
+            
+            # Validar que ambos são criptoativos
+            if from_asset['asset_class'] != 'CRIPTO' or to_asset['asset_class'] != 'CRIPTO':
+                raise ValueError("SWAP só é permitido entre criptoativos")
+            
+            logger.info(f"SWAP: {from_asset['symbol']} -> {to_asset['symbol']} em {swap_data['movement_date']}")
+            
+            # 2. Buscar preço histórico do ativo vendido (FROM) em BRL para calcular cost_basis_brl
+            movement_datetime = datetime.fromisoformat(swap_data['movement_date'].replace('Z', '+00:00'))
+            
+            from_api_id = from_asset['price_api_identifier']
+            if not from_api_id:
+                raise ValueError(f"price_api_identifier não configurado para {from_asset['symbol']}")
+            
+            logger.info(f"Buscando preço histórico para {from_api_id} em {movement_datetime}")
+            from_price_brl = self.price_service.get_historical_crypto_price_in_brl(from_api_id, movement_datetime)
+            logger.info(f"Preço obtido: {from_price_brl}")
+            
+            if from_price_brl is None:
+                raise ValueError(f"Não foi possível obter preço histórico para {from_asset['symbol']} em {movement_datetime}")
+            
+            logger.info(f"Preço histórico do {from_asset['symbol']}: R$ {from_price_brl}")
+            
+            # 3. Calcular valores da operação
+            from_quantity = Decimal(str(swap_data['from_quantity']))
+            to_quantity = Decimal(str(swap_data['to_quantity']))
+            fee = Decimal(str(swap_data.get('fee', 0)))
+            
+            # Valor total da operação em BRL (baseado no ativo vendido)
+            total_operation_value_brl = from_quantity * from_price_brl
+            
+            # Preço unitário do ativo comprado em BRL (custo de aquisição)
+            to_price_per_unit_brl = total_operation_value_brl / to_quantity
+            
+            logger.info(f"Valor total da operação: R$ {total_operation_value_brl}")
+            logger.info(f"Preço de aquisição do {to_asset['symbol']}: R$ {to_price_per_unit_brl}")
+            
+            # 4. Inserir movimento SWAP_OUT (ativo vendido)
+            swap_out_query = """
+                INSERT INTO asset_movements 
+                (user_id, account_id, asset_id, movement_type, movement_date, quantity, 
+                 price_per_unit, fee, cost_basis_brl, notes) 
+                VALUES (%s, %s, %s, 'SWAP_OUT', %s, %s, %s, %s, %s, %s)
+            """
+            
+            swap_out_values = (
+                user_id,
+                swap_data['account_id'],
+                swap_data['from_asset_id'],
+                swap_data['movement_date'],
+                from_quantity,
+                from_price_brl,
+                fee / 2,  # Dividir taxa entre os dois movimentos
+                total_operation_value_brl,
+                f"SWAP OUT: {from_asset['symbol']} -> {to_asset['symbol']}. {swap_data.get('notes', '')}"
+            )
+            
+            cursor.execute(swap_out_query, swap_out_values)
+            swap_out_id = cursor.lastrowid
+            
+            logger.info(f"Movimento SWAP_OUT criado com ID: {swap_out_id}")
+            
+            # 5. Inserir movimento SWAP_IN (ativo comprado)
+            swap_in_query = """
+                INSERT INTO asset_movements 
+                (user_id, account_id, asset_id, movement_type, movement_date, quantity, 
+                 price_per_unit, fee, cost_basis_brl, notes) 
+                VALUES (%s, %s, %s, 'SWAP_IN', %s, %s, %s, %s, %s, %s)
+            """
+            
+            swap_in_values = (
+                user_id,
+                swap_data['account_id'],
+                swap_data['to_asset_id'],
+                swap_data['movement_date'],
+                to_quantity,
+                to_price_per_unit_brl,
+                fee / 2,  # Dividir taxa entre os dois movimentos
+                total_operation_value_brl,
+                f"SWAP IN: {from_asset['symbol']} -> {to_asset['symbol']}. {swap_data.get('notes', '')}"
+            )
+            
+            cursor.execute(swap_in_query, swap_in_values)
+            swap_in_id = cursor.lastrowid
+            
+            logger.info(f"Movimento SWAP_IN criado com ID: {swap_in_id}")
+            
+            # 6. Vincular os movimentos através de linked_movement_id
+            update_links_query = """
+                UPDATE asset_movements 
+                SET linked_movement_id = %s 
+                WHERE id = %s
+            """
+            
+            # SWAP_OUT aponta para SWAP_IN
+            cursor.execute(update_links_query, (swap_in_id, swap_out_id))
+            
+            # SWAP_IN aponta para SWAP_OUT
+            cursor.execute(update_links_query, (swap_out_id, swap_in_id))
+            
+            logger.info("Movimentos vinculados com sucesso")
+            
+            # 7. COMMIT da transação atômica
+            self.db_service.connection.commit()
+            
+            logger.info(f"SWAP concluído com sucesso: OUT_ID={swap_out_id}, IN_ID={swap_in_id}")
+            
+            return {
+                "success": True,
+                "message": "Operação de SWAP realizada com sucesso",
+                "swap_out_id": swap_out_id,
+                "swap_in_id": swap_in_id,
+                "total_value_brl": float(total_operation_value_brl),
+                "from_asset": {
+                    "id": from_asset['id'],
+                    "symbol": from_asset['symbol'],
+                    "quantity": float(from_quantity),
+                    "price_brl": float(from_price_brl)
+                },
+                "to_asset": {
+                    "id": to_asset['id'],
+                    "symbol": to_asset['symbol'],
+                    "quantity": float(to_quantity),
+                    "price_brl": float(to_price_per_unit_brl)
+                }
+            }
+            
+        except Exception as e:
+            # ROLLBACK em caso de qualquer erro
+            self.db_service.connection.rollback()
+            logger.error(f"Erro na operação de SWAP: {str(e)}")
+            raise Exception(f"Erro ao executar SWAP: {str(e)}")
+        
+        finally:
+            cursor.close()
     
     def get_portfolio_summary(self, user_id: int, account_id: Optional[int] = None) -> List[Dict]:
         """Obtém o resumo do portfólio com cálculo de custo médio e posições atuais"""
@@ -74,22 +271,26 @@ class PortfolioService:
                     a.last_price_brl,
                     a.last_price_updated_at,
                     SUM(CASE 
-                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO') 
+                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO', 'SWAP_IN') 
                         THEN am.quantity 
                         ELSE 0 
                     END) as total_bought,
                     SUM(CASE 
-                        WHEN am.movement_type IN ('VENDA', 'TRANSFERENCIA_SAIDA') 
+                        WHEN am.movement_type IN ('VENDA', 'TRANSFERENCIA_SAIDA', 'SWAP_OUT') 
                         THEN am.quantity 
                         ELSE 0 
                     END) as total_sold,
                     SUM(CASE 
-                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO') AND am.price_per_unit IS NOT NULL
-                        THEN am.quantity * am.price_per_unit 
+                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO', 'SWAP_IN') 
+                             AND am.cost_basis_brl IS NOT NULL
+                        THEN am.cost_basis_brl 
+                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO') 
+                             AND am.cost_basis_brl IS NULL AND am.price_per_unit IS NOT NULL
+                        THEN am.quantity * am.price_per_unit
                         ELSE 0 
                     END) as total_invested,
                     SUM(CASE 
-                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO') AND am.price_per_unit IS NOT NULL
+                        WHEN am.movement_type IN ('COMPRA', 'TRANSFERENCIA_ENTRADA', 'SINCRONIZACAO', 'SWAP_IN') 
                         THEN am.quantity 
                         ELSE 0 
                     END) as weighted_quantity
@@ -135,12 +336,12 @@ class PortfolioService:
                 market_value_brl = current_quantity * current_price_brl if current_price_brl > 0 else Decimal('0.00')
                 
                 # LOG DETALHADO: Cálculo de valor por ativo
-                print(f"[PORTFOLIO_SERVICE] Calculando asset {position['asset_id']} ({position['symbol']}):")
-                print(f"  - current_quantity: {current_quantity}")
-                print(f"  - current_price_usdt: ${current_price_usdt}")
-                print(f"  - current_price_brl: R$ {current_price_brl}")
-                print(f"  - market_value_usdt: ${market_value_usdt}")
-                print(f"  - market_value_brl: R$ {market_value_brl}")
+                # print(f"[PORTFOLIO_SERVICE] Calculando asset {position['asset_id']} ({position['symbol']}):")
+                # print(f"  - current_quantity: {current_quantity}")
+                # print(f"  - current_price_usdt: ${current_price_usdt}")
+                # print(f"  - current_price_brl: R$ {current_price_brl}")
+                # print(f"  - market_value_usdt: ${market_value_usdt}")
+                # print(f"  - market_value_brl: R$ {market_value_brl}")
                 
                 # Lucro/prejuízo não realizado em ambas as moedas - com proteção defensiva
                 invested_value = Decimal('0.00')
@@ -224,10 +425,14 @@ class PortfolioService:
                     am.*,
                     a.symbol,
                     a.name as asset_name,
-                    acc.name as account_name
+                    acc.name as account_name,
+                    linked_am.movement_type as linked_movement_type,
+                    linked_a.symbol as linked_asset_symbol
                 FROM asset_movements am
                 JOIN assets a ON am.asset_id = a.id
                 JOIN accounts acc ON am.account_id = acc.id
+                LEFT JOIN asset_movements linked_am ON am.linked_movement_id = linked_am.id
+                LEFT JOIN assets linked_a ON linked_am.asset_id = linked_a.id
                 WHERE am.user_id = %s AND am.asset_id = %s
                 ORDER BY am.movement_date DESC, am.id DESC
             """
@@ -259,10 +464,14 @@ class PortfolioService:
                     a.name as asset_name,
                     a.asset_class,
                     a.icon_url,
-                    acc.name as account_name
+                    acc.name as account_name,
+                    linked_am.movement_type as linked_movement_type,
+                    linked_a.symbol as linked_asset_symbol
                 FROM asset_movements am
                 JOIN assets a ON am.asset_id = a.id
                 JOIN accounts acc ON am.account_id = acc.id
+                LEFT JOIN asset_movements linked_am ON am.linked_movement_id = linked_am.id
+                LEFT JOIN assets linked_a ON linked_am.asset_id = linked_a.id
                 WHERE am.user_id = %s AND am.account_id = %s
                 ORDER BY am.movement_date DESC, am.id DESC
             """

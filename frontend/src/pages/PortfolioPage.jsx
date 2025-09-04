@@ -49,13 +49,17 @@ import {
   IconPlus as IconPlusDecimal,
   IconMinus
 } from '@tabler/icons-react';
+import { IconArrowsExchange2 } from '@tabler/icons-react';
 import api from '../api';
+import { SwapMovementModal } from '../components/SwapMovementModal';
 
 const MOVEMENT_TYPES = [
   { value: 'COMPRA', label: 'Compra' },
   { value: 'VENDA', label: 'Venda' },
   { value: 'TRANSFERENCIA_ENTRADA', label: 'Transferência Entrada' },
-  { value: 'TRANSFERENCIA_SAIDA', label: 'Transferência Saída' }
+  { value: 'TRANSFERENCIA_SAIDA', label: 'Transferência Saída' },
+  { value: 'SWAP_IN', label: 'SWAP IN' },
+  { value: 'SWAP_OUT', label: 'SWAP OUT' }
 ];
 
 const ASSET_CLASSES = [
@@ -78,6 +82,7 @@ export function PortfolioPage() {
   const [loading, setLoading] = useState(true);
   const [modalOpened, setModalOpened] = useState(false);
   const [detailsModalOpened, setDetailsModalOpened] = useState(false);
+  const [swapModalOpened, setSwapModalOpened] = useState(false);
   const [selectedAssetHistory, setSelectedAssetHistory] = useState([]);
   const [selectedAssetName, setSelectedAssetName] = useState('');
   const [error, setError] = useState('');
@@ -214,6 +219,22 @@ export function PortfolioPage() {
   const maxMarketValue = React.useMemo(() => {
     return Math.max(...portfolio.map(p => Number(p.market_value_brl) || 0), 0);
   }, [portfolio]);
+
+  // Filtrar apenas criptoativos para o modal de SWAP
+  const cryptoAssets = React.useMemo(() => {
+    return assets.filter(asset => asset.asset_class === 'CRIPTO');
+  }, [assets]);
+
+  // Função para lidar com o sucesso de um SWAP
+  const handleSwapSuccess = async (swapResult) => {
+    try {
+      // Recarregar o portfólio para refletir as mudanças
+      await loadPortfolio();
+      setSwapModalOpened(false);
+    } catch (error) {
+      console.error('Erro ao recarregar portfólio após SWAP:', error);
+    }
+  };
 
   // Sincronizar localMarketValueRange com filters.market_value_range
   useEffect(() => {
@@ -981,6 +1002,14 @@ export function PortfolioPage() {
           >
             Adicionar Movimento
           </Button>
+          <Button
+            variant="light"
+            color="purple"
+            leftSection={<IconArrowsExchange2 size={16} />}
+            onClick={() => setSwapModalOpened(true)}
+          >
+            Registrar SWAP
+          </Button>
         </Group>
       </Group>
 
@@ -1522,7 +1551,9 @@ export function PortfolioPage() {
                           { value: 'VENDA', label: 'VENDA' },
                           { value: 'TRANSFERENCIA_ENTRADA', label: 'TRANSFERÊNCIA ENTRADA' },
                           { value: 'TRANSFERENCIA_SAIDA', label: 'TRANSFERÊNCIA SAÍDA' },
-                          { value: 'SINCRONIZACAO', label: 'SINCRONIZAÇÃO' }
+                          { value: 'SINCRONIZACAO', label: 'SINCRONIZAÇÃO' },
+                          { value: 'SWAP_IN', label: 'SWAP IN' },
+                          { value: 'SWAP_OUT', label: 'SWAP OUT' }
                         ]}
                         value={editingValues.movement_type}
                         onChange={(value) => setEditingValues(prev => ({
@@ -1541,7 +1572,9 @@ export function PortfolioPage() {
                       <Badge 
                         color={
                           movement.movement_type === 'COMPRA' ? 'green' :
-                          movement.movement_type === 'VENDA' ? 'red' : 'blue'
+                          movement.movement_type === 'VENDA' ? 'red' :
+                          movement.movement_type === 'SWAP_IN' ? 'purple' :
+                          movement.movement_type === 'SWAP_OUT' ? 'violet' : 'blue'
                         }
                         variant="light"
                       >
@@ -1713,9 +1746,22 @@ export function PortfolioPage() {
                         }}
                       />
                     ) : (
-                      <Text size="sm" c="dimmed">
-                        {movement.notes || '-'}
-                      </Text>
+                      <Stack gap={2}>
+                        <Text size="sm" c="dimmed">
+                          {movement.notes || '-'}
+                        </Text>
+                        {/* Mostrar informação do movimento vinculado para SWAPs */}
+                        {(movement.movement_type === 'SWAP_IN' || movement.movement_type === 'SWAP_OUT') && 
+                         movement.linked_asset_symbol && (
+                          <Badge 
+                            size="xs" 
+                            variant="dot" 
+                            color={movement.movement_type === 'SWAP_IN' ? 'purple' : 'violet'}
+                          >
+                            {movement.movement_type === 'SWAP_IN' ? 'De' : 'Para'}: {movement.linked_asset_symbol}
+                          </Badge>
+                        )}
+                      </Stack>
                     )}
                   </Grid.Col>
 
@@ -1777,6 +1823,15 @@ export function PortfolioPage() {
           </Stack>
         </ScrollArea>
       </Modal>
+
+      {/* Modal de SWAP */}
+      <SwapMovementModal
+        isOpen={swapModalOpened}
+        onClose={() => setSwapModalOpened(false)}
+        onSwapSuccess={handleSwapSuccess}
+        accounts={accounts}
+        cryptoAssets={cryptoAssets}
+      />
     </Stack>
   );
 }

@@ -20,7 +20,7 @@ class HistoricalDataService:
     Usa CoinGecko como fonte principal de dados.
     """
     
-    def __init__(self):
+    def __init__(self, db_service=None):
         self.db_service = DatabaseService()
         # URLs da API do CoinGecko
         self.coingecko_base_url = "https://api.coingecko.com/api/v3"
@@ -349,6 +349,154 @@ class HistoricalDataService:
         except Exception as e:
             self.db_service.connection.rollback()
             logger.error(f"Erro ao limpar cache: {str(e)}")
+
+    def get_historical_price_at(self, asset_symbol: str, target_datetime: datetime) -> Optional[float]:
+        """
+        Busca o preço histórico de um ativo em um momento específico.
+        
+        Args:
+            asset_symbol: Símbolo do ativo (ex: BTCUSDT)
+            target_datetime: Data/hora específica para buscar o preço
+            
+        Returns:
+            Preço em USD no momento especificado, ou None se não encontrado
+        """
+        try:
+            logger.info(f"Buscando preço histórico: {asset_symbol} em {target_datetime}")
+            
+            target_date = target_datetime.date()
+            
+            # 1. Primeiro, verificar cache no banco
+            cached_price = self._get_cached_price_at(asset_symbol, target_date)
+            if cached_price is not None:
+                logger.info(f"Preço encontrado no cache: {cached_price}")
+                return cached_price
+            
+            # 2. Se não estiver no cache, buscar da API
+            # Buscar dados para um período de 3 dias centrados na data alvo para maior precisão
+            start_date = target_date - timedelta(days=1)
+            end_date = target_date + timedelta(days=1)
+            
+            historical_df = self._fetch_from_api(asset_symbol, '1d', start_date, end_date)
+            
+            if historical_df is not None and not historical_df.empty:
+                # Salvar no cache
+                self._save_to_cache(asset_symbol, '1d', historical_df)
+                
+                # Buscar o preço mais próximo da data alvo
+                target_price = self._extract_price_from_df(historical_df, target_date)
+                if target_price is not None:
+                    logger.info(f"Preço obtido da API: {target_price}")
+                    return target_price
+            
+            # 3. Como fallback, tentar buscar o preço atual se a data for recente (últimas 24h)
+            if (datetime.now().date() - target_date).days <= 1:
+                current_price = self._get_current_price_fallback(asset_symbol)
+                if current_price is not None:
+                    logger.warning(f"Usando preço atual como fallback: {current_price}")
+                    return current_price
+            
+            logger.warning(f"Não foi possível obter preço histórico para {asset_symbol} em {target_datetime}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Erro ao buscar preço histórico: {str(e)}")
+            return None
+
+    def _get_cached_price_at(self, asset_symbol: str, target_date: date) -> Optional[float]:
+        """Busca preço em cache para uma data específica."""
+        try:
+            self.db_service.ensure_connection()
+            cursor = self.db_service.connection.cursor()
+            
+            # Buscar preço exato para a data
+            query = """
+                SELECT close_price 
+                FROM historical_price_data 
+                WHERE asset_symbol = %s AND date = %s AND timeframe = '1d'
+                LIMIT 1
+            """
+            cursor.execute(query, (asset_symbol, target_date))
+            result = cursor.fetchone()
+            cursor.close()
+            
+            if result:
+                return float(result[0])
+            
+            # Se não encontrar data exata, buscar a data mais próxima (±3 dias)
+            query = """
+                SELECT close_price, ABS(DATEDIFF(%s, date)) as date_diff
+                FROM historical_price_data 
+                WHERE asset_symbol = %s AND timeframe = '1d'
+                  AND ABS(DATEDIFF(%s, date)) <= 3
+                ORDER BY date_diff ASC
+                LIMIT 1
+            """
+            cursor = self.db_service.connection.cursor()
+            cursor.execute(query, (target_date, asset_symbol, target_date))
+            result = cursor.fetchone()
+            cursor.close()
+            
+            if result:
+                logger.info(f"Usando preço de data próxima (diferença: {result[1]} dias)")
+                return float(result[0])
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Erro ao buscar preço em cache: {str(e)}")
+            return None
+
+    def _extract_price_from_df(self, df: pd.DataFrame, target_date: date) -> Optional[float]:
+        """Extrai preço do DataFrame para uma data específica."""
+        try:
+            # Converter índice para date apenas (sem hora) para comparação
+            df_dates = pd.to_datetime(df.index.date)
+            target_pd_date = pd.to_datetime(target_date)
+            
+            # Buscar data exata
+            exact_match = df_dates == target_pd_date
+            if exact_match.any():
+                matching_rows = df[exact_match]
+                return float(matching_rows.iloc[0]['close'])
+            
+            # Se não encontrar data exata, pegar a mais próxima
+            if not df.empty:
+                return float(df.iloc[0]['close'])
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Erro ao extrair preço do DataFrame: {str(e)}")
+            return None
+
+    def _get_current_price_fallback(self, asset_symbol: str) -> Optional[float]:
+        """Busca preço atual como fallback para datas recentes."""
+        try:
+            # Mapear para ID do CoinGecko
+            coingecko_id = self.symbol_to_coingecko_id.get(asset_symbol)
+            if not coingecko_id:
+                return None
+            
+            # Buscar preço atual
+            url = f"{self.coingecko_base_url}/simple/price"
+            params = {
+                'ids': coingecko_id,
+                'vs_currencies': 'usd'
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            if coingecko_id in data and 'usd' in data[coingecko_id]:
+                return float(data[coingecko_id]['usd'])
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Erro ao buscar preço atual como fallback: {str(e)}")
+            return None
 
     def get_cache_stats(self) -> Dict:
         """Retorna estatísticas do cache de dados."""

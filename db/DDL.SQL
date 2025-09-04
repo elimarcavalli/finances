@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS `accounts` (
   KEY `fk_account_institution` (`institution_id`),
   CONSTRAINT `accounts_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_account_institution` FOREIGN KEY (`institution_id`) REFERENCES `institutions` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=107 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=112 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Exportação de dados foi desmarcado.
 
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS `assets` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `symbol` (`symbol`),
   KEY `idx_assets_av_trading_day` (`av_latest_trading_day`)
-) ENGINE=InnoDB AUTO_INCREMENT=113 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=118 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Exportação de dados foi desmarcado.
 
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS `asset_movements` (
   `user_id` int NOT NULL,
   `account_id` int NOT NULL,
   `asset_id` int NOT NULL,
-  `movement_type` enum('COMPRA','VENDA','TRANSFERENCIA_ENTRADA','TRANSFERENCIA_SAIDA','SINCRONIZACAO') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `movement_type` enum('COMPRA','VENDA','TRANSFERENCIA_ENTRADA','TRANSFERENCIA_SAIDA','SINCRONIZACAO','SWAP_IN','SWAP_OUT') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `movement_date` datetime NOT NULL,
   `quantity` decimal(36,18) NOT NULL,
   `price_per_unit` decimal(36,18) DEFAULT NULL,
@@ -84,15 +84,21 @@ CREATE TABLE IF NOT EXISTS `asset_movements` (
   `to_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `block_number` bigint DEFAULT NULL,
   `gas_fee` decimal(36,18) DEFAULT NULL,
+  `linked_movement_id` int DEFAULT NULL COMMENT 'ID do movimento vinculado (usado para SWAP - vincula SWAP_IN com SWAP_OUT)',
+  `cost_basis_brl` decimal(36,18) DEFAULT NULL COMMENT 'Custo de aquisição em BRL no momento da transação - fonte da verdade para cálculos de P&L',
   PRIMARY KEY (`id`),
   UNIQUE KEY `tx_hash` (`tx_hash`),
   KEY `user_id` (`user_id`),
   KEY `account_id` (`account_id`),
   KEY `asset_id` (`asset_id`),
+  KEY `idx_linked_movement` (`linked_movement_id`),
+  KEY `idx_movement_type` (`movement_type`),
+  KEY `idx_portfolio_cost_basis` (`user_id`,`asset_id`,`movement_type`,`cost_basis_brl`),
   CONSTRAINT `asset_movements_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `asset_movements_ibfk_2` FOREIGN KEY (`account_id`) REFERENCES `accounts` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `asset_movements_ibfk_3` FOREIGN KEY (`asset_id`) REFERENCES `assets` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=140 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  CONSTRAINT `asset_movements_ibfk_3` FOREIGN KEY (`asset_id`) REFERENCES `assets` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_linked_movement` FOREIGN KEY (`linked_movement_id`) REFERENCES `asset_movements` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=145 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Exportação de dados foi desmarcado.
 
@@ -154,7 +160,7 @@ CREATE TABLE IF NOT EXISTS `daily_financial_snapshots` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_user_snapshot_date` (`user_id`,`snapshot_date`),
   CONSTRAINT `fk_snapshot_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=14 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Armazena snapshots diários detalhados da situação financeira do usuário para análises históricas.';
+) ENGINE=InnoDB AUTO_INCREMENT=35 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Armazena snapshots diários detalhados da situação financeira do usuário para análises históricas.';
 
 -- Exportação de dados foi desmarcado.
 
@@ -165,7 +171,7 @@ CREATE TABLE IF NOT EXISTS `financial_obligations` (
   `description` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `amount` decimal(20,2) NOT NULL,
   `due_date` date NOT NULL,
-  `type` enum('PAYABLE','RECEIVABLE') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `type` enum('PAYABLE','RECEIVABLE','TRANSFERENCIA') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `status` enum('PENDING','PAID','OVERDUE') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'PENDING',
   `category` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `entity_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
@@ -181,7 +187,7 @@ CREATE TABLE IF NOT EXISTS `financial_obligations` (
   CONSTRAINT `financial_obligations_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `financial_obligations_ibfk_2` FOREIGN KEY (`linked_transaction_id`) REFERENCES `transactions` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_recurring_rule` FOREIGN KEY (`recurring_rule_id`) REFERENCES `recurring_rules` (`id`) ON DELETE SET NULL
-) ENGINE=InnoDB AUTO_INCREMENT=57 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=68 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Exportação de dados foi desmarcado.
 
@@ -274,13 +280,23 @@ CREATE TABLE IF NOT EXISTS `physical_assets` (
   `current_value` decimal(20,2) NOT NULL COMMENT 'Valor de mercado atual, atualizado manualmente',
   `last_valuation_date` date NOT NULL COMMENT 'Data da última avaliação do valor de mercado',
   `notes` text COLLATE utf8mb4_unicode_ci,
+  `status` enum('ATIVO','VENDIDO') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ATIVO',
+  `acquisition_transaction_id` int DEFAULT NULL,
+  `liquidation_transaction_id` int DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  UNIQUE KEY `acquisition_transaction_id` (`acquisition_transaction_id`),
+  UNIQUE KEY `liquidation_transaction_id` (`liquidation_transaction_id`),
   KEY `user_id` (`user_id`),
   KEY `asset_id` (`asset_id`),
+  KEY `idx_physical_assets_status` (`status`),
+  KEY `idx_physical_assets_acquisition_tx` (`acquisition_transaction_id`),
+  KEY `idx_physical_assets_liquidation_tx` (`liquidation_transaction_id`),
   CONSTRAINT `physical_assets_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `physical_assets_ibfk_2` FOREIGN KEY (`asset_id`) REFERENCES `assets` (`id`) ON DELETE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  CONSTRAINT `physical_assets_ibfk_2` FOREIGN KEY (`asset_id`) REFERENCES `assets` (`id`) ON DELETE RESTRICT,
+  CONSTRAINT `physical_assets_ibfk_3` FOREIGN KEY (`acquisition_transaction_id`) REFERENCES `transactions` (`id`) ON DELETE RESTRICT,
+  CONSTRAINT `physical_assets_ibfk_4` FOREIGN KEY (`liquidation_transaction_id`) REFERENCES `transactions` (`id`) ON DELETE RESTRICT
+) ENGINE=InnoDB AUTO_INCREMENT=18 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Exportação de dados foi desmarcado.
 
@@ -308,7 +324,7 @@ CREATE TABLE IF NOT EXISTS `recurring_rules` (
   CONSTRAINT `fk_recurring_rule_from_account` FOREIGN KEY (`from_account_id`) REFERENCES `accounts` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_recurring_rule_to_account` FOREIGN KEY (`to_account_id`) REFERENCES `accounts` (`id`) ON DELETE SET NULL,
   CONSTRAINT `recurring_rules_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=15 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=30 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Exportação de dados foi desmarcado.
 
@@ -323,7 +339,7 @@ CREATE TABLE IF NOT EXISTS `strategies` (
   PRIMARY KEY (`id`),
   KEY `user_id` (`user_id`),
   CONSTRAINT `strategies_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Exportação de dados foi desmarcado.
 
@@ -346,7 +362,7 @@ CREATE TABLE IF NOT EXISTS `strategy_optimization_jobs` (
   KEY `asset_id` (`asset_id`),
   CONSTRAINT `strategy_optimization_jobs_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `strategy_optimization_jobs_ibfk_2` FOREIGN KEY (`asset_id`) REFERENCES `assets` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=30 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=31 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Exportação de dados foi desmarcado.
 
@@ -385,7 +401,7 @@ CREATE TABLE IF NOT EXISTS `transactions` (
   CONSTRAINT `transactions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `transactions_ibfk_2` FOREIGN KEY (`from_account_id`) REFERENCES `accounts` (`id`) ON DELETE SET NULL,
   CONSTRAINT `transactions_ibfk_3` FOREIGN KEY (`to_account_id`) REFERENCES `accounts` (`id`) ON DELETE SET NULL
-) ENGINE=InnoDB AUTO_INCREMENT=167 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=234 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Exportação de dados foi desmarcado.
 

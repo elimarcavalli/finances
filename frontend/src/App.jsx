@@ -17,6 +17,7 @@ import { ObligationsPage } from './pages/ObligationsPage';
 import { PortfolioPage } from './pages/PortfolioPage';
 import { PatrimonioPage } from './pages/PatrimonioPage';
 import { ReportsPage } from './pages/ReportsPage';
+import { MantineShowcasePage } from './pages/MantineShowcasePage';
 import { ProtectedRoute } from './components/ProtectedRoute';
 
 function App() {
@@ -44,6 +45,8 @@ function App() {
           <Route path="vaults" element={<VaultsPage />} />
           <Route path="strategies" element={<StrategiesPage />} />
           <Route path="backtesting" element={<BacktestingPage />} />
+          {/* Showcase */}
+          <Route path="mantine-showcase" element={<MantineShowcasePage />} />
         </Route>
       </Route>
     </Routes>

@@ -49,8 +49,8 @@ class ObligationService:
             if obligation_data.get('amount', 0) <= 0:
                 raise ValueError("Amount must be greater than zero")
             
-            if obligation_data.get('type') not in ['PAYABLE', 'RECEIVABLE']:
-                raise ValueError("Type must be PAYABLE or RECEIVABLE")
+            if obligation_data.get('type') not in ['PAYABLE', 'RECEIVABLE', 'TRANSFERENCIA']:
+                raise ValueError("Type must be PAYABLE, RECEIVABLE or TRANSFERENCIA")
             
             # Inserir obrigação
             query = """

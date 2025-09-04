@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Title, 
   Button, 
-  Table, 
   Modal, 
   TextInput, 
   Select,
@@ -35,6 +34,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import api from '../api';
 import { AccountIcon } from '../components/AccountIcon';
+import { AdvancedTable } from '../components/AdvancedTable';
 
 export function TransactionsPage() {
   // Estados principais
@@ -299,10 +299,105 @@ a obrigação será automaticamente revertida para status PENDENTE.`;
     }
   };
 
+  // Colunas para AdvancedTable
+  const columns = [
+    {
+      accessor: 'transaction_date',
+      header: 'Data',
+      sortable: true,
+      render: (row) => new Date(row.transaction_date).toLocaleDateString('pt-BR')
+    },
+    {
+      accessor: 'description',
+      header: 'Descrição',
+      sortable: true,
+      filterable: true,
+      filterType: 'text',
+      render: (row) => (
+        <Group gap="sm">
+          {getTransactionIcon(row.type)}
+          {row.description}
+        </Group>
+      )
+    },
+    {
+      accessor: 'type',
+      header: 'Tipo',
+      sortable: true,
+      filterable: true,
+      filterType: 'select',
+      filterOptions: [
+        { value: 'RECEITA', label: 'Receita' },
+        { value: 'DESPESA', label: 'Despesa' },
+        { value: 'TRANSFERENCIA', label: 'Transferência' }
+      ],
+      render: (row) => (
+        <Badge variant="light" color={getAmountColor(row.type)}>
+          {getTransactionTypeLabel(row.type)}
+        </Badge>
+      )
+    },
+    {
+      accessor: 'category',
+      header: 'Categoria',
+      sortable: true,
+      filterable: true,
+      filterType: 'text',
+      render: (row) => row.category || '-'
+    },
+    {
+      accessor: 'amount',
+      header: 'Valor',
+      sortable: true,
+      filterable: true,
+      filterType: 'range',
+      formatLabel: (value) => `R$ ${value.toFixed(2)}`,
+      align: 'right',
+      render: (row) => (
+        <Text c={getAmountColor(row.type)} fw={500}>
+          {formatCurrency(row.amount)}
+        </Text>
+      )
+    },
+    {
+      accessor: 'account',
+      header: 'Conta',
+      render: (row) => (
+        row.type === 'TRANSFERENCIA' 
+          ? `${row.from_account_name} → ${row.to_account_name}`
+          : row.from_account_name || row.to_account_name || '-'
+      )
+    },
+    {
+      accessor: 'actions',
+      header: 'Ações',
+      render: (row) => (
+        <Group gap="xs">
+          <ActionIcon
+            variant="light"
+            color="blue"
+            onClick={() => openEditModal(row)}
+            disabled={loading}
+            size="sm"
+          >
+          <IconPencil size={14} />
+          </ActionIcon>
+          <ActionIcon
+            variant="light"
+            color="red"
+            onClick={() => handleDelete(row.id)}
+            disabled={loading}
+            size="sm"
+          >
+            <IconTrash size={14} />
+          </ActionIcon>
+        </Group>
+      )
+    }
+  ];
+
   return (
-    <Stack gap="md">
-      <Title order={2}>Meus Lançamentos</Title>
-      
+    <Stack gap="md">      
       {error && (
         <Alert icon={<IconAlertCircle size="1rem" />} color="red">
           {error}
@@ -329,81 +424,14 @@ a obrigação será automaticamente revertida para status PENDENTE.`;
         </Button>
       </Group>
 
-      <Table striped highlightOnHover>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Data</Table.Th>
-            <Table.Th>Descrição</Table.Th>
-            <Table.Th>Tipo</Table.Th>
-            <Table.Th>Categoria</Table.Th>
-            <Table.Th>Valor</Table.Th>
-            <Table.Th>Conta</Table.Th>
-            <Table.Th width={120}>Ações</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {transactions.length === 0 ? (
-            <Table.Tr>
-              <Table.Td colSpan={7} style={{ textAlign: 'center', padding: '2rem' }}>
-                <Text c="dimmed">
-                  {loading ? 'Carregando lançamentos...' : 'Nenhum lançamento encontrado'}
-                </Text>
-              </Table.Td>
-            </Table.Tr>
-          ) : (
-            transactions.map((transaction) => (
-              <Table.Tr key={transaction.id}>
-                <Table.Td>
-                  {new Date(transaction.transaction_date).toLocaleDateString('pt-BR')}
-                </Table.Td>
-                <Table.Td>
-                  <Group gap="sm">
-                    {getTransactionIcon(transaction.type)}
-                    {transaction.description}
-                  </Group>
-                </Table.Td>
-                <Table.Td>
-                  <Badge variant="light" color={getAmountColor(transaction.type)}>
-                    {getTransactionTypeLabel(transaction.type)}
-                  </Badge>
-                </Table.Td>
-                <Table.Td>{transaction.category || '-'}</Table.Td>
-                <Table.Td>
-                  <Text c={getAmountColor(transaction.type)} fw={500}>
-                    {formatCurrency(transaction.amount)}
-                  </Text>
-                </Table.Td>
-                <Table.Td>
-                  {transaction.type === 'TRANSFERENCIA' 
-                    ? `${transaction.from_account_name} → ${transaction.to_account_name}`
-                    : transaction.from_account_name || transaction.to_account_name || '-'
-                  }
-                </Table.Td>
-                <Table.Td>
-                  <Group gap="xs">
-                    <ActionIcon
-                      variant="light"
-                      color="blue"
-                      onClick={() => openEditModal(transaction)}
-                      disabled={loading}
-                    >
-                      <IconPencil size={14} />
-                    </ActionIcon>
-                    <ActionIcon
-                      variant="light"
-                      color="red"
-                      onClick={() => handleDelete(transaction.id)}
-                      disabled={loading}
-                    >
-                      <IconTrash size={14} />
-                    </ActionIcon>
-                  </Group>
-                </Table.Td>
-              </Table.Tr>
-            ))
-          )}
-        </Table.Tbody>
-      </Table>
+      <AdvancedTable
+        title="Meus Lançamentos"
+        data={transactions}
+        columns={columns}
+        pagination={true}
+        emptyStateText={loading ? "Carregando lançamentos..." : "Nenhum lançamento encontrado"}
+        emptyStateDescription="Adicione seu primeiro lançamento financeiro"
+      />
 
       <Modal
         opened={modalOpened}

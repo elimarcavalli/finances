@@ -574,23 +574,23 @@ export function PatrimonioPage() {
           )}
         </div>
       ) : (
-        <div className="page-table-container">
-          <AdvancedTable
-              data={assets}
-              columns={columns}
-              loading={loading}
-              emptyStateText={
-                statusFilter === 'ATIVO' ? 'Nenhum bem ativo' : 
-                statusFilter === 'VENDIDO' ? 'Nenhum bem vendido' : 
-                'Nenhum bem cadastrado'
-              }
-              emptyStateDescription={
-                statusFilter === 'ATIVO' || !statusFilter ? 'Adicione seu primeiro bem para compor seu patrimônio.' : 
-                'Nenhum bem foi vendido ainda.'
-              }
-              footerCalculations={footerCalculations}
-          />
-        </div>
+        <AdvancedTable
+          title="Patrimônio Físico"
+          data={assets}
+          columns={columns}
+          loading={loading}
+          emptyStateText={
+            statusFilter === 'ATIVO' ? 'Nenhum bem ativo' : 
+            statusFilter === 'VENDIDO' ? 'Nenhum bem vendido' : 
+            'Nenhum bem cadastrado'
+          }
+          emptyStateDescription={
+            statusFilter === 'ATIVO' || !statusFilter ? 'Adicione seu primeiro bem para compor seu patrimônio.' : 
+            'Nenhum bem foi vendido ainda.'
+          }
+          footerCalculations={footerCalculations}
+          pagination
+        />
       )}
 
       <Modal 
