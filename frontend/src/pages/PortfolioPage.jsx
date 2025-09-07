@@ -1003,7 +1003,7 @@ export function PortfolioPage() {
             Adicionar Movimento
           </Button>
           <Button
-            variant="light"
+            // variant="light"
             color="purple"
             leftSection={<IconArrowsExchange2 size={16} />}
             onClick={() => setSwapModalOpened(true)}

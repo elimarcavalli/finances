@@ -112,7 +112,36 @@ class PortfolioService:
             logger.info(f"SWAP: {from_asset['symbol']} -> {to_asset['symbol']} em {swap_data['movement_date']}")
             
             # 2. Buscar preço histórico do ativo vendido (FROM) em BRL para calcular cost_basis_brl
-            movement_datetime = datetime.fromisoformat(swap_data['movement_date'].replace('Z', '+00:00'))
+            # Tratar diferentes formatos de data que podem vir do frontend
+            movement_date_input = swap_data['movement_date']
+            logger.info(f"[movement_date] Recebido: {movement_date_input} (tipo: {type(movement_date_input)})")
+            
+            try:
+                # Se já for um objeto datetime, usar diretamente
+                if isinstance(movement_date_input, datetime):
+                    movement_datetime = movement_date_input
+                    logger.info(f"[movement_datetime] Já é datetime: {movement_datetime}")
+                else:
+                    # Converter string para datetime
+                    movement_date_str = str(movement_date_input)
+                    
+                    # Se for ISO string com Z, remover e converter
+                    if movement_date_str.endswith('Z'):
+                        movement_datetime = datetime.fromisoformat(movement_date_str.replace('Z', '+00:00'))
+                    # Se for ISO string sem timezone, tratar como UTC
+                    elif 'T' in movement_date_str and '+' not in movement_date_str:
+                        movement_datetime = datetime.fromisoformat(movement_date_str)
+                    # Se for apenas data (YYYY-MM-DD), adicionar hora
+                    elif len(movement_date_str) == 10:
+                        movement_datetime = datetime.fromisoformat(movement_date_str + ' 00:00:00')
+                    else:
+                        movement_datetime = datetime.fromisoformat(movement_date_str)
+                        
+                    logger.info(f"[movement_datetime] Convertido de string: {movement_datetime}")
+                    
+            except (ValueError, TypeError) as ve:
+                logger.error(f"Erro ao converter data: {movement_date_input} - {ve}")
+                raise ValueError(f"Formato de data inválido: {movement_date_input}")  
             
             from_api_id = from_asset['price_api_identifier']
             if not from_api_id:
@@ -153,7 +182,7 @@ class PortfolioService:
                 user_id,
                 swap_data['account_id'],
                 swap_data['from_asset_id'],
-                swap_data['movement_date'],
+                movement_datetime.strftime('%Y-%m-%d %H:%M:%S'),  # Formato MySQL DATETIME
                 from_quantity,
                 from_price_brl,
                 fee / 2,  # Dividir taxa entre os dois movimentos
@@ -178,7 +207,7 @@ class PortfolioService:
                 user_id,
                 swap_data['account_id'],
                 swap_data['to_asset_id'],
-                swap_data['movement_date'],
+                movement_datetime.strftime('%Y-%m-%d %H:%M:%S'),  # Formato MySQL DATETIME
                 to_quantity,
                 to_price_per_unit_brl,
                 fee / 2,  # Dividir taxa entre os dois movimentos
@@ -548,27 +577,99 @@ class PortfolioService:
             cursor.close()
     
     def delete_asset_movement(self, user_id: int, movement_id: int) -> dict:
-        """Deleta um movimento de ativo"""
+        """
+        Deleta um movimento de ativo.
+        Para movimentos SWAP (SWAP_IN/SWAP_OUT), deleta automaticamente o movimento vinculado.
+        """
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
             # Verificar se o movimento pertence ao usuário
-            cursor.execute("SELECT * FROM asset_movements WHERE id = %s AND user_id = %s", (movement_id, user_id))
+            cursor.execute("""
+                SELECT id, movement_type, linked_movement_id, asset_id, quantity
+                FROM asset_movements 
+                WHERE id = %s AND user_id = %s
+            """, (movement_id, user_id))
             existing_movement = cursor.fetchone()
             
             if not existing_movement:
                 raise Exception("Movimento não encontrado ou não pertence ao usuário")
             
-            # Deletar o movimento
-            cursor.execute("DELETE FROM asset_movements WHERE id = %s AND user_id = %s", (movement_id, user_id))
+            movement_type = existing_movement['movement_type']
+            linked_movement_id = existing_movement['linked_movement_id']
+            
+            movements_to_delete = []
+            linked_movement = None
+            
+            # Se for um movimento SWAP, precisamos deletar ambas as pernas
+            if movement_type in ('SWAP_IN', 'SWAP_OUT'):
+                movements_to_delete.append({
+                    'id': existing_movement['id'],
+                    'type': movement_type,
+                    'asset_id': existing_movement['asset_id'],
+                    'quantity': existing_movement['quantity']
+                })
+                
+                # Buscar o movimento vinculado
+                if linked_movement_id:
+                    cursor.execute("""
+                        SELECT id, movement_type, asset_id, quantity
+                        FROM asset_movements 
+                        WHERE id = %s AND user_id = %s
+                    """, (linked_movement_id, user_id))
+                    linked_movement = cursor.fetchone()
+                    
+                    if linked_movement:
+                        movements_to_delete.append({
+                            'id': linked_movement['id'],
+                            'type': linked_movement['movement_type'],
+                            'asset_id': linked_movement['asset_id'],
+                            'quantity': linked_movement['quantity']
+                        })
+                        logger.info(f"SWAP detectado: deletando movimento {movement_id} ({movement_type}) e movimento vinculado {linked_movement_id} ({linked_movement['movement_type']})")
+                    else:
+                        logger.warning(f"Movimento SWAP {movement_id} tem linked_movement_id {linked_movement_id} mas movimento vinculado não foi encontrado")
+                else:
+                    logger.warning(f"Movimento SWAP {movement_id} não possui linked_movement_id")
+            else:
+                # Movimento normal, deletar apenas ele
+                movements_to_delete.append({
+                    'id': existing_movement['id'],
+                    'type': movement_type,
+                    'asset_id': existing_movement['asset_id'],
+                    'quantity': existing_movement['quantity']
+                })
+                logger.info(f"Deletando movimento normal {movement_id} ({movement_type})")
+            
+            # Executar deleções em uma transação atômica
+            deleted_ids = []
+            for movement in movements_to_delete:
+                cursor.execute("DELETE FROM asset_movements WHERE id = %s AND user_id = %s", (movement['id'], user_id))
+                if cursor.rowcount > 0:
+                    deleted_ids.append(movement['id'])
+                    logger.info(f"Movimento {movement['id']} ({movement['type']}) deletado com sucesso")
+                else:
+                    logger.error(f"Falha ao deletar movimento {movement['id']}")
+            
+            if not deleted_ids:
+                raise Exception("Falha ao deletar movimento(s)")
+            
             self.db_service.connection.commit()
             
-            if cursor.rowcount == 0:
-                raise Exception("Falha ao deletar movimento")
+            # Preparar resposta
+            if len(deleted_ids) > 1:
+                message = f"SWAP deletado com sucesso (movimentos {', '.join(map(str, deleted_ids))})"
+            else:
+                message = "Movimento deletado com sucesso"
             
-            return {"message": "Movimento deletado com sucesso"}
+            return {
+                "message": message,
+                "deleted_movements": deleted_ids,
+                "is_swap": movement_type in ('SWAP_IN', 'SWAP_OUT')
+            }
             
         except mysql.connector.Error as err:
             self.db_service.connection.rollback()
+            logger.error(f"Erro ao deletar movimento {movement_id}: {err}")
             raise Exception(f"Erro ao deletar movimento: {err}")
         finally:
             cursor.close()

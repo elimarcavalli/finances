@@ -3,6 +3,7 @@ import {
   Modal,
   Stack,
   Group,
+  ThemeIcon,
   TextInput,
   NumberInput,
   Button,
@@ -11,9 +12,13 @@ import {
   Box,
   Avatar,
   Badge,
+  Grid,
+  Center,
+  Accordion,
   Divider,
   Alert,
   Loader,
+  Fieldset,
   ActionIcon,
   Tooltip,
   Card
@@ -22,9 +27,12 @@ import {
   IconArrowsExchange2,
   IconCalendar,
   IconCoin,
+  IconNotes,
+  IconTrendingUp,
   IconInfoCircle,
-  IconArrowDown,
-  IconX
+  IconTrendingDown,
+  IconWallet,
+  IconCurrencyDollar
 } from '@tabler/icons-react';
 import { DateTimePicker } from '@mantine/dates';
 import { useForm } from '@mantine/form';
@@ -40,6 +48,8 @@ export function SwapMovementModal({
 }) {
   const [loading, setLoading] = useState(false);
   const [previewData, setPreviewData] = useState(null);
+  const [historicalPrices, setHistoricalPrices] = useState({});
+  const [loadingHistoricalPrices, setLoadingHistoricalPrices] = useState(false);
 
   // Formulário usando Mantine Form
   const form = useForm({
@@ -113,7 +123,62 @@ export function SwapMovementModal({
     return assetSelectData.find(asset => asset.value === form.values.to_asset_id);
   }, [form.values.to_asset_id, assetSelectData]);
 
-  // Calcular preview da operação
+  // Buscar preços históricos quando os parâmetros necessários estiverem disponíveis
+  const fetchHistoricalPrices = async (fromAssetId, toAssetId, movementDate) => {
+    if (!fromAssetId || !toAssetId || !movementDate) return;
+    
+    setLoadingHistoricalPrices(true);
+    
+    try {
+      const token = getAuthToken();
+      const dateStr = new Date(movementDate).toISOString().slice(0, 19);
+      
+      const fromAsset = cryptoAssets.find(a => a.id.toString() === fromAssetId);
+      const toAsset = cryptoAssets.find(a => a.id.toString() === toAssetId);
+      
+      if (!fromAsset || !toAsset) return;
+      
+      const promises = [
+        fetch(`http://localhost:8000/price/historical?api_id=${fromAsset.price_api_identifier}&date=${dateStr}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+        fetch(`http://localhost:8000/price/historical?api_id=${toAsset.price_api_identifier}&date=${dateStr}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+      ];
+      
+      const [fromResponse, toResponse] = await Promise.all(promises);
+      
+      const fromPrice = fromResponse.ok ? (await fromResponse.json()).price_brl : null;
+      const toPrice = toResponse.ok ? (await toResponse.json()).price_brl : null;
+      
+      setHistoricalPrices({
+        [fromAssetId]: fromPrice,
+        [toAssetId]: toPrice,
+        timestamp: Date.now()
+      });
+      
+    } catch (error) {
+      console.error('Erro ao buscar preços históricos:', error);
+    } finally {
+      setLoadingHistoricalPrices(false);
+    }
+  };
+
+  // Debounce para buscar preços históricos
+  useEffect(() => {
+    const { from_asset_id, to_asset_id, movement_date } = form.values;
+    
+    if (from_asset_id && to_asset_id && movement_date) {
+      const timeoutId = setTimeout(() => {
+        fetchHistoricalPrices(from_asset_id, to_asset_id, movement_date);
+      }, 500); // Debounce de 500ms
+      
+      return () => clearTimeout(timeoutId);
+    }
+  }, [form.values.from_asset_id, form.values.to_asset_id, form.values.movement_date]);
+
+  // Calcular preview da operação com preços históricos
   useEffect(() => {
     const { from_asset_id, to_asset_id, from_quantity, to_quantity } = form.values;
     
@@ -122,9 +187,16 @@ export function SwapMovementModal({
       const toAsset = assetSelectData.find(a => a.value === to_asset_id);
       
       if (fromAsset && toAsset) {
-        const fromValueBRL = from_quantity * (fromAsset.current_price_brl || 0);
-        const toValueBRL = to_quantity * (toAsset.current_price_brl || 0);
-        const priceDifference = fromValueBRL - toValueBRL;
+        // Usar preços históricos se disponíveis, senão usar preços atuais como fallback
+        const fromHistoricalPrice = historicalPrices[from_asset_id];
+        const toHistoricalPrice = historicalPrices[to_asset_id];
+        
+        const fromPriceBRL = fromHistoricalPrice || fromAsset.current_price_brl || 0;
+        const toPriceBRL = toHistoricalPrice || toAsset.current_price_brl || 0;
+        
+        const fromValueBRL = from_quantity * fromPriceBRL;
+        const toValueBRL = to_quantity * toPriceBRL;
+        const priceDifference = toValueBRL - fromValueBRL;
         const percentageDiff = fromValueBRL > 0 ? ((priceDifference / fromValueBRL) * 100) : 0;
 
         setPreviewData({
@@ -133,13 +205,14 @@ export function SwapMovementModal({
           fromValueBRL,
           toValueBRL,
           priceDifference,
-          percentageDiff
+          percentageDiff,
+          usingHistoricalPrices: !!(fromHistoricalPrice && toHistoricalPrice)
         });
       }
     } else {
       setPreviewData(null);
     }
-  }, [form.values, assetSelectData]);
+  }, [form.values, assetSelectData, historicalPrices]);
 
   // Inverter os ativos selecionados
   const handleSwapAssets = () => {
@@ -177,7 +250,7 @@ export function SwapMovementModal({
         to_asset_id: parseInt(values.to_asset_id),
         from_quantity: parseFloat(values.from_quantity),
         to_quantity: parseFloat(values.to_quantity),
-        movement_date: values.movement_date.toISOString(),
+        movement_date: new Date(values.movement_date).toISOString().slice(0, 19),
         fee: parseFloat(values.fee || 0),
         notes: values.notes || null
       };
@@ -228,30 +301,48 @@ export function SwapMovementModal({
     }
   };
 
-  // Componente de seleção de ativo customizado
-  const AssetSelectItem = ({ asset, ...others }) => (
-    <Group gap="sm" {...others}>
-      <Avatar
-        src={asset.icon_url}
-        alt={asset.symbol}
-        size="sm"
-        radius="xl"
-      >
-        {asset.symbol?.slice(0, 2)}
-      </Avatar>
-      <Box style={{ flex: 1 }}>
-        <Text size="sm" fw={500}>
-          {asset.asset?.name || 'Nome não disponível'}
-        </Text>
-        <Text size="xs" c="dimmed">
-          {asset.symbol} • R$ {(asset.current_price_brl || 0).toLocaleString('pt-BR', { 
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 6
-          })}
-        </Text>
-      </Box>
-    </Group>
-  );
+  // Componente de renderização customizada para opções de ativo
+  const renderAssetOption = ({ option, checked, ...others }) => {
+    const asset = assetSelectData.find(a => a.value === option.value);
+    if (!asset) return null;
+
+    return (
+      <Group gap="sm" p="sm" {...others}>
+        <Avatar
+          src={asset.icon_url}
+          alt={asset.symbol}
+          size="md"
+          radius="xl"
+        >
+          {asset.symbol?.slice(0, 2)}
+        </Avatar>
+        <Box style={{ flex: 1 }}>
+          <Group gap="xs" align="center">
+            <Badge variant="light" size="sm">
+              {asset.symbol}
+            </Badge>
+            <Text size="sm" fw={500} style={{ flex: 1 }}>
+              {asset.asset?.name || 'Nome não disponível'}
+            </Text>
+          </Group>
+          <Text size="xs" c="dimmed">
+            R$ {(asset.current_price_brl || 0).toLocaleString('pt-BR', { 
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 6
+            })}
+          </Text>
+        </Box>
+      </Group>
+    );
+  };
+
+  // Calcular taxa de câmbio implícita
+  const exchangeRate = useMemo(() => {
+    if (!form.values.from_quantity || !form.values.to_quantity || 
+        form.values.from_quantity <= 0 || form.values.to_quantity <= 0) return null;
+    
+    return parseFloat(form.values.from_quantity) / parseFloat(form.values.to_quantity);
+  }, [form.values.from_quantity, form.values.to_quantity]);
 
   return (
     <Modal
@@ -259,117 +350,202 @@ export function SwapMovementModal({
       onClose={handleClose}
       title={
         <Group gap="sm">
-          <IconArrowsExchange2 size={20} color="var(--mantine-color-blue-6)" />
-          <Text fw={600} size="lg">Registrar SWAP</Text>
+          <ThemeIcon size="lg" variant="light" color="blue">
+            <IconArrowsExchange2 size={20} />
+          </ThemeIcon>
+          <Text fw={600} size="xl">Registrar SWAP de Ativos</Text>
         </Group>
       }
-      size="lg"
+      size="xl"
       centered
       styles={{
         title: { width: '100%' }
       }}
     >
       <form onSubmit={form.onSubmit(handleSubmit)}>
-        <Stack gap="md">
+        <Stack gap="lg">
           
-          {/* Seleção de Conta */}
-          <Select
-            label="Conta"
-            placeholder="Selecione a conta onde ocorreu o SWAP"
-            data={accountSelectData}
-            required
-            leftSection={<IconCoin size={16} />}
-            {...form.getInputProps('account_id')}
-          />
-
-          <Divider label="Detalhes do SWAP" labelPosition="center" />
-
-          {/* Ativo Vendido (FROM) */}
-          <Box>
-            <Text size="sm" fw={500} mb="xs">
-              Ativo Vendido (SWAP OUT)
-            </Text>
-            <Group align="flex-end" gap="sm">
-              <Select
-                placeholder="Selecione o ativo vendido"
-                data={assetSelectData.filter(asset => 
-                  asset.value !== form.values.to_asset_id
-                )}
-                searchable
-                required
-                style={{ flex: 1 }}
-                itemComponent={({ value, ...item }) => {
-                  const asset = assetSelectData.find(a => a.value === value);
-                  return asset ? <AssetSelectItem asset={asset} {...item} /> : null;
-                }}
-                {...form.getInputProps('from_asset_id')}
-              />
-            </Group>
-            <NumberInput
-              placeholder="Quantidade vendida"
+          {/* Campos Globais */}
+          <Group grow>
+            <Select
+              label="Conta"
+              placeholder="Selecione a conta"
+              data={accountSelectData}
               required
-              mt="xs"
-              min={0}
-              step={0.000001}
-              decimalScale={6}
-              {...form.getInputProps('from_quantity')}
+              leftSection={<IconWallet size={16} />}
+              {...form.getInputProps('account_id')}
             />
-          </Box>
-
-          {/* Botão de Inversão */}
-          <Group justify="center">
-            <Tooltip label="Inverter ativos">
-              <ActionIcon
-                variant="light"
-                size="lg"
-                radius="xl"
-                color="blue"
-                onClick={handleSwapAssets}
-                disabled={!form.values.from_asset_id || !form.values.to_asset_id}
-              >
-                <IconArrowDown size={20} />
-              </ActionIcon>
-            </Tooltip>
+            <DateTimePicker
+              label="Data e Hora"
+              placeholder="Data do SWAP"
+              required
+              leftSection={<IconCalendar size={16} />}
+              {...form.getInputProps('movement_date')}
+            />
           </Group>
 
-          {/* Ativo Comprado (TO) */}
-          <Box>
-            <Text size="sm" fw={500} mb="xs">
-              Ativo Comprado (SWAP IN)
-            </Text>
-            <Group align="flex-end" gap="sm">
-              <Select
-                placeholder="Selecione o ativo comprado"
-                data={assetSelectData.filter(asset => 
-                  asset.value !== form.values.from_asset_id
-                )}
-                searchable
-                required
-                style={{ flex: 1 }}
-                itemComponent={({ value, ...item }) => {
-                  const asset = assetSelectData.find(a => a.value === value);
-                  return asset ? <AssetSelectItem asset={asset} {...item} /> : null;
-                }}
-                {...form.getInputProps('to_asset_id')}
-              />
-            </Group>
-            <NumberInput
-              placeholder="Quantidade comprada"
-              required
-              mt="xs"
-              min={0}
-              step={0.000001}
-              decimalScale={6}
-              {...form.getInputProps('to_quantity')}
-            />
-          </Box>
+          {/* Layout Principal com Grid - Ativo comprado à esquerda */}
+          <Grid>
+            {/* Coluna de Destino (Ativo Comprado) - À ESQUERDA */}
+            <Grid.Col span={5}>
+              <Fieldset 
+                legend="Você Compra (SWAP IN)" 
+                style={{ height: '100%' }}
+              >
+                <Stack gap="md">
+                  <Select
+                    label="Ativo Comprado"
+                    placeholder="Selecione o ativo"
+                    data={assetSelectData.filter(asset => 
+                      asset.value !== form.values.from_asset_id
+                    )}
+                    searchable
+                    required
+                    renderOption={renderAssetOption}
+                    leftSection={<IconCoin size={16} />}
+                    {...form.getInputProps('to_asset_id')}
+                  />
+                  <NumberInput
+                    label="Quantidade Comprada"
+                    placeholder="0.000000"
+                    required
+                    min={0}
+                    step={0.000001}
+                    decimalScale={6}
+                    leftSection={<IconCurrencyDollar size={16} />}
+                    {...form.getInputProps('to_quantity')}
+                  />
+                  {selectedToAsset && (
+                    <Box p="xs" bg="gray.0" style={{ borderRadius: 8 }}>
+                      <Group justify="space-between">
+                        <Text size="xs" c="dimmed">
+                          Preço atual: R$ {selectedToAsset.current_price_brl?.toLocaleString('pt-BR', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 6
+                          })}
+                        </Text>
+                        {historicalPrices[form.values.to_asset_id] && (
+                          <Text size="xs" c="blue" fw={500}>
+                            Histórico: R$ {historicalPrices[form.values.to_asset_id].toLocaleString('pt-BR', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 6
+                            })}
+                          </Text>
+                        )}
+                      </Group>
+                      {loadingHistoricalPrices && (
+                        <Text size="xs" c="dimmed">Carregando preço histórico...</Text>
+                      )}
+                    </Box>
+                  )}
+                </Stack>
+              </Fieldset>
+            </Grid.Col>
+
+            {/* Coluna Central */}
+            <Grid.Col span={2}>
+              <Center style={{ height: '100%' }}>
+                <Stack gap="sm" align="center">
+                  <Tooltip label="Inverter ativos">
+                    <ActionIcon
+                      variant="gradient"
+                      gradient={{ from: 'blue', to: 'cyan' }}
+                      size="xl"
+                      radius="xl"
+                      onClick={handleSwapAssets}
+                      disabled={!form.values.from_asset_id || !form.values.to_asset_id}
+                    >
+                      <IconArrowsExchange2 size={24} />
+                    </ActionIcon>
+                  </Tooltip>
+                  {exchangeRate && selectedFromAsset && selectedToAsset && (
+                    <Box style={{ textAlign: 'center' }}>
+                      <Text size="xs" c="dimmed" fw={500}>
+                        Taxa de Câmbio
+                      </Text>
+                      <Text size="sm" fw={600}>
+                        1 {selectedToAsset.symbol} ≈ {exchangeRate.toFixed(6)} {selectedFromAsset.symbol}
+                      </Text>
+                    </Box>
+                  )}
+                </Stack>
+              </Center>
+            </Grid.Col>
+
+            {/* Coluna de Origem (Ativo Vendido) - À DIREITA */}
+            <Grid.Col span={5}>
+              <Fieldset 
+                legend="Você Vende (SWAP OUT)" 
+                style={{ height: '100%' }}
+              >
+                <Stack gap="md">
+                  <Select
+                    label="Ativo Vendido"
+                    placeholder="Selecione o ativo"
+                    data={assetSelectData.filter(asset => 
+                      asset.value !== form.values.to_asset_id
+                    )}
+                    searchable
+                    required
+                    renderOption={renderAssetOption}
+                    leftSection={<IconCoin size={16} />}
+                    {...form.getInputProps('from_asset_id')}
+                  />
+                  <NumberInput
+                    label="Quantidade Vendida"
+                    placeholder="0.000000"
+                    required
+                    min={0}
+                    step={0.000001}
+                    decimalScale={6}
+                    leftSection={<IconCurrencyDollar size={16} />}
+                    {...form.getInputProps('from_quantity')}
+                  />
+                  {selectedFromAsset && (
+                    <Box p="xs" bg="gray.0" style={{ borderRadius: 8 }}>
+                      <Group justify="space-between">
+                        <Text size="xs" c="dimmed">
+                          Preço atual: R$ {selectedFromAsset.current_price_brl?.toLocaleString('pt-BR', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 6
+                          })}
+                        </Text>
+                        {historicalPrices[form.values.from_asset_id] && (
+                          <Text size="xs" c="blue" fw={500}>
+                            Histórico: R$ {historicalPrices[form.values.from_asset_id].toLocaleString('pt-BR', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 6
+                            })}
+                          </Text>
+                        )}
+                      </Group>
+                      {loadingHistoricalPrices && (
+                        <Text size="xs" c="dimmed">Carregando preço histórico...</Text>
+                      )}
+                    </Box>
+                  )}
+                </Stack>
+              </Fieldset>
+            </Grid.Col>
+          </Grid>
 
           {/* Preview da Operação */}
           {previewData && (
-            <Card withBorder p="md" bg="gray.0">
-              <Group justify="space-between" mb="xs">
-                <Text size="sm" fw={500}>Preview da Operação</Text>
+            <Card withBorder p="lg" radius="md">
+              <Group justify="space-between" mb="md">
+                <Group gap="xs">
+                  <ThemeIcon size="sm" variant="light" color="blue">
+                    <IconTrendingUp size={14} />
+                  </ThemeIcon>
+                  <Text size="lg" fw={600}>Preview da Operação</Text>
+                  {previewData.usingHistoricalPrices && (
+                    <Badge size="sm" color="blue" variant="light">
+                      Preços Históricos
+                    </Badge>
+                  )}
+                </Group>
                 <Badge
+                  size="lg"
                   color={Math.abs(previewData.percentageDiff) < 5 ? 'green' : 'orange'}
                   variant="light"
                 >
@@ -378,75 +554,112 @@ export function SwapMovementModal({
                 </Badge>
               </Group>
               
-              <Stack gap="xs">
-                <Group justify="space-between">
-                  <Text size="sm">
-                    Vendendo: {form.values.from_quantity} {previewData.fromAsset.symbol}
-                  </Text>
-                  <Text size="sm" fw={500}>
-                    R$ {previewData.fromValueBRL.toLocaleString('pt-BR', { 
-                      minimumFractionDigits: 2 
-                    })}
+              <Grid>
+                {/* Ativo Comprado - À ESQUERDA (alinhado com layout) */}
+                <Grid.Col span={5}>
+                  <Box p="md" bg="green.0" style={{ borderRadius: 8, textAlign: 'center' }}>
+                    <Text size="sm" c="dimmed" mb="xs">Comprando</Text>
+                    <Text size="lg" fw={600} c="green">
+                      {form.values.to_quantity} {previewData.toAsset.symbol}
+                    </Text>
+                    <Text size="sm" fw={500}>
+                      R$ {previewData.toValueBRL.toLocaleString('pt-BR', { 
+                        minimumFractionDigits: 2 
+                      })}
+                    </Text>
+                  </Box>
+                </Grid.Col>
+                
+                <Grid.Col span={2}>
+                  <Center style={{ height: '100%' }}>
+                    <IconArrowsExchange2 size={20} color="var(--mantine-color-gray-6)" />
+                  </Center>
+                </Grid.Col>
+                
+                {/* Ativo Vendido - À DIREITA (alinhado com layout) */}
+                <Grid.Col span={5}>
+                  <Box p="md" bg="red.0" style={{ borderRadius: 8, textAlign: 'center' }}>
+                    <Text size="sm" c="dimmed" mb="xs">Vendendo</Text>
+                    <Text size="lg" fw={600} c="red">
+                      {form.values.from_quantity} {previewData.fromAsset.symbol}
+                    </Text>
+                    <Text size="sm" fw={500}>
+                      R$ {previewData.fromValueBRL.toLocaleString('pt-BR', { 
+                        minimumFractionDigits: 2 
+                      })}
+                    </Text>
+                  </Box>
+                </Grid.Col>
+              </Grid>
+              
+              <Divider my="md" />
+              
+              <Group justify="space-between">
+                <Group gap="xs">
+                  <Text size="sm" c="dimmed">Diferença Financeira:</Text>
+                  <Text size="xs" c="dimmed">
+                    (Valor recebido - Valor pago)
                   </Text>
                 </Group>
-                
-                <Group justify="space-between">
-                  <Text size="sm">
-                    Comprando: {form.values.to_quantity} {previewData.toAsset.symbol}
-                  </Text>
-                  <Text size="sm" fw={500}>
-                    R$ {previewData.toValueBRL.toLocaleString('pt-BR', { 
-                      minimumFractionDigits: 2 
-                    })}
-                  </Text>
-                </Group>
-                
-                <Divider />
-                
-                <Group justify="space-between">
-                  <Text size="sm" c="dimmed">Diferença:</Text>
+                <Group gap="xs">
+                  <ThemeIcon
+                    size="sm"
+                    variant="light"
+                    color={previewData.priceDifference > 0 ? 'green' : 'red'}
+                  >
+                    {previewData.priceDifference > 0 ? 
+                      <IconTrendingUp size={12} /> : 
+                      <IconTrendingDown size={12} />
+                    }
+                  </ThemeIcon>
                   <Text 
-                    size="sm" 
-                    fw={500}
+                    size="md" 
+                    fw={600}
                     c={previewData.priceDifference > 0 ? 'green' : 'red'}
                   >
-                    R$ {Math.abs(previewData.priceDifference).toLocaleString('pt-BR', { 
+                    {previewData.priceDifference > 0 ? '+' : ''}R$ {previewData.priceDifference.toLocaleString('pt-BR', { 
                       minimumFractionDigits: 2 
                     })}
                   </Text>
                 </Group>
-              </Stack>
+              </Group>
+              
+              {loadingHistoricalPrices && (
+                <Alert color="blue" variant="light" mt="md">
+                  <Group gap="xs">
+                    <Loader size="xs" />
+                    <Text size="sm">Carregando preços históricos para cálculos precisos...</Text>
+                  </Group>
+                </Alert>
+              )}
             </Card>
           )}
 
-          <Divider label="Informações Adicionais" labelPosition="center" />
-
-          {/* Data/Hora */}
-          <DateTimePicker
-            label="Data e Hora do SWAP"
-            placeholder="Selecione a data e hora"
-            required
-            leftSection={<IconCalendar size={16} />}
-            {...form.getInputProps('movement_date')}
-          />
-
-          {/* Taxa */}
-          <NumberInput
-            label="Taxa da Operação"
-            placeholder="0.00"
-            min={0}
-            step={0.01}
-            decimalScale={2}
-            leftSection={<Text size="sm">R$</Text>}
-            {...form.getInputProps('fee')}
-          />
-
-          {/* Observações */}
-          <TextInput
-            label="Observações"
-            placeholder="Observações sobre o SWAP (opcional)"
-            {...form.getInputProps('notes')}
-          />
+          {/* Informações Adicionais em Accordion */}
+          <Accordion variant="separated">
+            <Accordion.Item value="additional-info">
+              <Accordion.Control>Informações Adicionais</Accordion.Control>
+              <Accordion.Panel>
+                <Stack gap="md">
+                  <NumberInput
+                    label="Taxa da Operação"
+                    placeholder="0.00"
+                    min={0}
+                    step={0.01}
+                    decimalScale={2}
+                    leftSection={<Text size="sm">R$</Text>}
+                    {...form.getInputProps('fee')}
+                  />
+                  <TextInput
+                    label="Observações"
+                    placeholder="Observações sobre o SWAP (opcional)"
+                    leftSection={<IconNotes size={16} />}
+                    {...form.getInputProps('notes')}
+                  />
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
+          </Accordion>
 
           {/* Informação sobre preços históricos */}
           <Alert
@@ -459,9 +672,10 @@ export function SwapMovementModal({
           </Alert>
 
           {/* Botões */}
-          <Group justify="flex-end" gap="sm" mt="md">
+          <Group justify="flex-end" gap="md" mt="xl">
             <Button 
               variant="subtle" 
+              size="md"
               onClick={handleClose}
               disabled={loading}
             >
@@ -469,9 +683,12 @@ export function SwapMovementModal({
             </Button>
             <Button
               type="submit"
+              size="md"
               loading={loading}
-              leftSection={<IconArrowsExchange2 size={16} />}
+              leftSection={<IconArrowsExchange2 size={18} />}
               disabled={!form.isValid() || loading}
+              gradient={{ from: 'blue', to: 'cyan' }}
+              variant="gradient"
             >
               Executar SWAP
             </Button>
