@@ -23,7 +23,7 @@ from services.obligation_service import ObligationService
 from services.reports_service import ReportsService
 from services.optimization_service import OptimizationService
 from services.physical_asset_service import PhysicalAssetService
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from decimal import Decimal
 from typing import Optional, List
 from datetime import date, datetime
@@ -502,6 +502,32 @@ class AssetMovementCreate(BaseModel):
     price_per_unit: Optional[float] = None
     fee: Optional[float] = 0.00
     notes: Optional[str] = None
+
+class AssetPurchaseCreate(BaseModel):
+    """Modelo para compra automática de ativo com transação e movimento"""
+    asset_id: int = Field(..., gt=0, description="ID do ativo a ser comprado")
+    account_id: int = Field(..., gt=0, description="ID da conta de origem do dinheiro")
+    investment_account_id: int = Field(..., gt=0, description="ID da conta onde ficará o investimento")
+    quantity: Decimal = Field(..., gt=0, le=Decimal('999999999'), description="Quantidade do ativo a comprar")
+    price_per_unit: Decimal = Field(..., gt=0, le=Decimal('999999999'), description="Preço por unidade em BRL")
+    purchase_date: date = Field(..., le=date.today(), description="Data da compra")
+    fee: Optional[Decimal] = Field(default=Decimal('0'), ge=0, le=Decimal('999999'), description="Taxas e custos adicionais")
+    notes: Optional[str] = Field(default=None, max_length=500, description="Observações da compra")
+    
+    @model_validator(mode='after')
+    def validate_accounts(self):
+        if self.account_id == self.investment_account_id:
+            raise ValueError("Conta de origem e conta de investimento devem ser diferentes")
+        return self
+
+class AssetPurchaseResponse(BaseModel):
+    """Resposta da operação de compra de ativo"""
+    transaction_id: int = Field(..., description="ID da transação criada")
+    asset_movement_id: int = Field(..., description="ID do movimento de ativo criado")
+    total_amount: Decimal = Field(..., description="Valor total da operação (quantidade × preço + taxas)")
+    remaining_balance: Decimal = Field(..., description="Saldo restante na conta após a compra")
+    success: bool = Field(..., description="Status da operação")
+    message: str = Field(..., description="Mensagem de retorno")
 
 class AssetMovementUpdate(BaseModel):
     account_id: Optional[int] = None
@@ -2027,6 +2053,46 @@ async def reconcile_wallet_history(account_id: int, current_user: dict = Depends
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during wallet reconciliation: {str(e)}")
+
+@app.post("/portfolio/buy-asset", response_model=AssetPurchaseResponse)
+def buy_asset(purchase: AssetPurchaseCreate, current_user: dict = Depends(get_current_user)):
+    """
+    Compra automática de ativo criando transaction e asset_movement atomicamente.
+    
+    Esta operação executa:
+    1. Valida dados de entrada e saldos
+    2. Cria transaction de saída de caixa da conta origem
+    3. Cria asset_movement de compra na conta de investimento
+    4. Ambas operações são executadas na mesma transação ACID
+    """
+    user_id = database_service.get_user_id_by_username(current_user['username'])
+    if not user_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        # Usar model_dump() que é mais eficiente no Pydantic v2
+        purchase_data = purchase.model_dump(exclude_unset=True)
+        
+        # Executar compra através do PortfolioService
+        result = portfolio_service.buy_asset(user_id, purchase_data)
+        
+        return AssetPurchaseResponse(
+            transaction_id=result['transaction_id'],
+            asset_movement_id=result['asset_movement_id'],
+            total_amount=result['total_amount'],
+            remaining_balance=result['remaining_balance'],
+            success=result['success'],
+            message=result['message']
+        )
+        
+    except ValueError as ve:
+        # Erros de validação de negócio
+        logger.error(f"Validation error in asset purchase: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        # Outros erros
+        logger.error(f"Error in asset purchase: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
 # === ENDPOINT TEMPORÁRIO PARA DEMONSTRAÇÃO ===
 @app.get("/demo/dashboard")

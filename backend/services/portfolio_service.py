@@ -3,17 +3,60 @@ from .price_service import PriceService
 import mysql.connector
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union, TypedDict
+from datetime import date
 import logging
 
 logger = logging.getLogger(__name__)
+
+class MovementData(TypedDict):
+    """Tipo para dados de movimento de ativo"""
+    account_id: int
+    asset_id: int
+    movement_type: str
+    movement_date: Union[str, datetime, date]
+    quantity: Union[float, str, Decimal]
+    price_per_unit: Union[float, str, Decimal]
+    fee: Optional[Union[float, str, Decimal]]
+    notes: Optional[str]
+
+class SwapData(TypedDict):
+    """Tipo para dados de operação SWAP"""
+    from_asset_id: int
+    to_asset_id: int
+    from_quantity: Union[float, str, Decimal]
+    to_quantity: Union[float, str, Decimal]
+    movement_date: Union[str, datetime]
+    account_id: int
+    fee: Optional[Union[float, str, Decimal]]
+    notes: Optional[str]
+
+class PurchaseData(TypedDict):
+    """Tipo específico para dados de compra de ativo"""
+    asset_id: int
+    account_id: int
+    investment_account_id: int
+    quantity: Union[str, Decimal]
+    price_per_unit: Union[str, Decimal]
+    purchase_date: Union[str, date]
+    fee: Optional[Union[str, Decimal]]
+    notes: Optional[str]
+
+class PurchaseResult(TypedDict):
+    """Tipo específico para resultado de compra"""
+    transaction_id: int
+    asset_movement_id: int
+    total_amount: float
+    remaining_balance: float
+    success: bool
+    message: str
 
 class PortfolioService:
     def __init__(self, db_service: DatabaseService, price_service: PriceService):
         self.db_service = db_service
         self.price_service = price_service
     
-    def add_asset_movement(self, user_id: int, movement_data: dict) -> dict:
+    def add_asset_movement(self, user_id: int, movement_data: MovementData) -> Dict[str, Union[int, str]]:
         """Adiciona um novo movimento de ativo"""
         cursor = self.db_service.connection.cursor(dictionary=True)
         try:
@@ -46,7 +89,7 @@ class PortfolioService:
         finally:
             cursor.close()
 
-    def add_swap_movement(self, user_id: int, swap_data: dict) -> dict:
+    def add_swap_movement(self, user_id: int, swap_data: SwapData) -> Dict[str, Union[int, str]]:
         """
         Adiciona uma operação de SWAP atômica entre dois criptoativos.
         
@@ -266,6 +309,158 @@ class PortfolioService:
             logger.error(f"Erro na operação de SWAP: {str(e)}")
             raise Exception(f"Erro ao executar SWAP: {str(e)}")
         
+        finally:
+            cursor.close()
+
+    def buy_asset(self, user_id: int, purchase_data: PurchaseData) -> PurchaseResult:
+        """
+        Executa compra automática de ativo criando transaction e asset_movement atomicamente.
+        
+        Args:
+            user_id: ID do usuário
+            purchase_data: Dict contendo dados da compra:
+                - asset_id: ID do ativo a ser comprado
+                - account_id: ID da conta de origem do dinheiro
+                - investment_account_id: ID da conta onde ficará o investimento
+                - quantity: Quantidade do ativo a comprar
+                - price_per_unit: Preço por unidade em BRL
+                - purchase_date: Data da compra
+                - fee: Taxas e custos adicionais (opcional)
+                - notes: Observações (opcional)
+                
+        Returns:
+            Dict com transaction_id, asset_movement_id, total_amount, remaining_balance
+        """
+        logger.info("Iniciando compra de ativo", extra={"user_id": user_id, "asset_id": purchase_data.get('asset_id')})
+        
+        # Validações de entrada
+        required_fields = ['asset_id', 'account_id', 'investment_account_id', 'quantity', 'price_per_unit', 'purchase_date']
+        for field in required_fields:
+            if field not in purchase_data or purchase_data[field] is None:
+                raise ValueError(f"Campo obrigatório ausente: {field}")
+        
+        # Validações de negócio
+        if purchase_data['account_id'] == purchase_data['investment_account_id']:
+            raise ValueError("Conta de origem e investimento devem ser diferentes")
+        
+        if Decimal(str(purchase_data['quantity'])) <= 0:
+            raise ValueError("Quantidade deve ser positiva")
+            
+        if Decimal(str(purchase_data['price_per_unit'])) <= 0:
+            raise ValueError("Preço por unidade deve ser positivo")
+        
+        # Calcular valores
+        quantity = Decimal(str(purchase_data['quantity']))
+        price_per_unit = Decimal(str(purchase_data['price_per_unit']))
+        fee = Decimal(str(purchase_data.get('fee', 0)))
+        subtotal = quantity * price_per_unit
+        total_amount = subtotal + fee
+        
+        # Garantir conexão ativa para transação ACID
+        self.db_service.ensure_connection()
+        cursor = self.db_service.connection.cursor(dictionary=True)
+        
+        try:
+            # INÍCIO DA TRANSAÇÃO ATÔMICA
+            if not self.db_service.connection.in_transaction:
+                self.db_service.connection.start_transaction()
+            
+            # 1. Verificar se contas pertencem ao usuário
+            cursor.execute("""
+                SELECT id, name, balance FROM accounts 
+                WHERE id IN (%s, %s) AND user_id = %s
+            """, (purchase_data['account_id'], purchase_data['investment_account_id'], user_id))
+            
+            accounts = cursor.fetchall()
+            if len(accounts) != 2:
+                raise ValueError("Uma ou ambas as contas não existem ou não pertencem ao usuário")
+            
+            # Encontrar conta de origem e investimento
+            origin_account = None
+            investment_account = None
+            for acc in accounts:
+                if acc['id'] == purchase_data['account_id']:
+                    origin_account = acc
+                elif acc['id'] == purchase_data['investment_account_id']:
+                    investment_account = acc
+            
+            # 2. Verificar saldo suficiente
+            current_balance = Decimal(str(origin_account['balance'])) if origin_account['balance'] else Decimal('0')
+            if current_balance < total_amount:
+                raise ValueError(f"Saldo insuficiente. Disponível: R$ {current_balance}, Necessário: R$ {total_amount}")
+            
+            # 3. Buscar dados do ativo
+            cursor.execute("SELECT symbol, name FROM assets WHERE id = %s", (purchase_data['asset_id'],))
+            asset = cursor.fetchone()
+            if not asset:
+                raise ValueError("Ativo não encontrado")
+            
+            # 4. Criar TRANSACTION de saída de caixa
+            transaction_description = f"Compra de {quantity} {asset['symbol']} - {asset['name']}"
+            cursor.execute("""
+                INSERT INTO transactions (
+                    user_id, description, amount, transaction_date, 
+                    type, category, from_account_id, to_account_id, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                user_id, transaction_description, total_amount, purchase_data['purchase_date'],
+                'INVESTIMENTO', 'Investimentos', purchase_data['account_id'], 
+                purchase_data['investment_account_id'], 'EFETIVADO'
+            ))
+            
+            transaction_id = cursor.lastrowid
+            logger.info(f"Transaction criada: {transaction_id}")
+            
+            # 5. Calcular cost_basis_brl (preço de aquisição em BRL)
+            cost_basis_brl = price_per_unit
+            if fee > 0:
+                # Distribuir a taxa proporcionalmente no custo base
+                cost_basis_brl += (fee / quantity)
+            
+            # 6. Criar ASSET_MOVEMENT de compra
+            cursor.execute("""
+                INSERT INTO asset_movements (
+                    user_id, account_id, asset_id, movement_type, movement_date,
+                    quantity, price_per_unit, fee, notes, cost_basis_brl
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                user_id, purchase_data['investment_account_id'], purchase_data['asset_id'],
+                'COMPRA', purchase_data['purchase_date'], quantity, price_per_unit,
+                fee, purchase_data.get('notes'), cost_basis_brl
+            ))
+            
+            asset_movement_id = cursor.lastrowid
+            logger.info(f"Asset movement criado: {asset_movement_id}")
+            
+            # 7. Calcular saldo restante
+            remaining_balance = current_balance - total_amount
+            
+            # COMMIT da transação
+            self.db_service.connection.commit()
+            
+            logger.info(f"Compra executada com sucesso - Transaction: {transaction_id}, Movement: {asset_movement_id}")
+            
+            return {
+                "transaction_id": transaction_id,
+                "asset_movement_id": asset_movement_id,
+                "total_amount": float(total_amount),
+                "remaining_balance": float(remaining_balance),
+                "success": True,
+                "message": f"Compra de {quantity} {asset['symbol']} executada com sucesso"
+            }
+            
+        except mysql.connector.Error as err:
+            self.db_service.connection.rollback()
+            logger.error(f"Erro MySQL na compra de ativo: {err}")
+            raise Exception(f"Erro no banco de dados: {str(err)}")
+        except ValueError as ve:
+            self.db_service.connection.rollback()
+            logger.error(f"Erro de validação na compra: {ve}")
+            raise ve
+        except Exception as e:
+            self.db_service.connection.rollback()
+            logger.error(f"Erro na compra de ativo: {str(e)}")
+            raise Exception(f"Erro ao executar compra: {str(e)}")
         finally:
             cursor.close()
     

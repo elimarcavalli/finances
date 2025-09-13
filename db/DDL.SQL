@@ -388,7 +388,7 @@ CREATE TABLE IF NOT EXISTS `transactions` (
   `description` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `amount` decimal(20,2) NOT NULL,
   `transaction_date` date NOT NULL,
-  `type` enum('RECEITA','DESPESA','TRANSFERENCIA') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `type` enum('RECEITA','DESPESA','TRANSFERENCIA','INVESTIMENTO') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `category` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `from_account_id` int DEFAULT NULL,
   `to_account_id` int DEFAULT NULL,

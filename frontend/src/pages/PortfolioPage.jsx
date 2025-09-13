@@ -52,6 +52,7 @@ import {
 import { IconArrowsExchange2 } from '@tabler/icons-react';
 import api from '../api';
 import { SwapMovementModal } from '../components/SwapMovementModal';
+import AssetPurchaseModal from '../components/AssetPurchaseModal';
 
 const MOVEMENT_TYPES = [
   { value: 'COMPRA', label: 'Compra' },
@@ -83,6 +84,7 @@ export function PortfolioPage() {
   const [modalOpened, setModalOpened] = useState(false);
   const [detailsModalOpened, setDetailsModalOpened] = useState(false);
   const [swapModalOpened, setSwapModalOpened] = useState(false);
+  const [purchaseModalOpened, setPurchaseModalOpened] = useState(false);
   const [selectedAssetHistory, setSelectedAssetHistory] = useState([]);
   const [selectedAssetName, setSelectedAssetName] = useState('');
   const [error, setError] = useState('');
@@ -233,6 +235,29 @@ export function PortfolioPage() {
       setSwapModalOpened(false);
     } catch (error) {
       console.error('Erro ao recarregar portfólio após SWAP:', error);
+    }
+  };
+
+  // Função para lidar com o sucesso de uma compra de ativo
+  const handlePurchaseSuccess = async (purchaseResult) => {
+    try {
+      // Recarregar o portfólio para refletir as mudanças
+      await loadPortfolio();
+      setPurchaseModalOpened(false);
+      
+      notifications.show({
+        title: 'Compra Confirmada!',
+        message: `Ativo adquirido e transação registrada com sucesso.`,
+        color: 'green',
+        autoClose: 5000
+      });
+    } catch (error) {
+      console.error('Erro ao recarregar portfólio após compra:', error);
+      notifications.show({
+        title: 'Atenção',
+        message: 'Compra realizada, mas houve erro ao atualizar a lista. Atualize a página.',
+        color: 'yellow'
+      });
     }
   };
 
@@ -1001,6 +1026,13 @@ export function PortfolioPage() {
             }}
           >
             Adicionar Movimento
+          </Button>
+          <Button
+            color="orange"
+            leftSection={<IconCoins size={16} />}
+            onClick={() => setPurchaseModalOpened(true)}
+          >
+            Comprar Ativo
           </Button>
           <Button
             // variant="light"
@@ -1831,6 +1863,13 @@ export function PortfolioPage() {
         onSwapSuccess={handleSwapSuccess}
         accounts={accounts}
         cryptoAssets={cryptoAssets}
+      />
+
+      {/* Modal de Compra de Ativo */}
+      <AssetPurchaseModal
+        opened={purchaseModalOpened}
+        onClose={() => setPurchaseModalOpened(false)}
+        onSuccess={handlePurchaseSuccess}
       />
     </Stack>
   );

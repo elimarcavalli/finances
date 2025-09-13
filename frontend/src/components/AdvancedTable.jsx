@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, Fragment } from 'react';
 import {
   Table,
   ScrollArea,
@@ -226,6 +226,7 @@ export function AdvancedTable({
               rightSection={
                 filters[column.accessor] && (
                   <ActionIcon 
+                    key={`clear-filter-${column.accessor}`}
                     size="xs" 
                     onClick={() => setFilters(prev => ({ ...prev, [column.accessor]: '' }))}
                   >
@@ -349,8 +350,8 @@ export function AdvancedTable({
               size="sm"
             />
             <Group justify="space-between" mt="xs">
-              <Text size="xs">{column.formatLabel ? column.formatLabel(localRange[0]) : localRange[0]}</Text>
-              <Text size="xs">{column.formatLabel ? column.formatLabel(localRange[1]) : localRange[1]}</Text>
+              <Text key={`range-min-${column.accessor}`} size="xs">{column.formatLabel ? column.formatLabel(localRange[0]) : localRange[0]}</Text>
+              <Text key={`range-max-${column.accessor}`} size="xs">{column.formatLabel ? column.formatLabel(localRange[1]) : localRange[1]}</Text>
             </Group>
             <Group justify="space-between" mt="xs">
               <Button 
@@ -387,21 +388,37 @@ export function AdvancedTable({
       }
     };
 
+    const filterElement = renderFilter();
+    
     return (
       <Group gap="xs" justify="flex-start" style={{ width: '100%' }}>
-        {renderFilter()}
-        {column.sortable && (
-          <UnstyledButton onClick={() => handleSort(column.accessor)} style={{ flex: 1, textAlign: 'left' }}>
+        {filterElement && (
+          <Fragment key={`filter-wrapper-${column.accessor}`}>
+            {filterElement}
+          </Fragment>
+        )}
+        {column.sortable ? (
+          <UnstyledButton 
+            key={`sort-button-${column.accessor}`} 
+            onClick={() => handleSort(column.accessor)} 
+            style={{ flex: 1, textAlign: 'left' }}
+          >
             <Group gap="xs">
               <Text fw={500} size="sm">{children}</Text>
               {sortField === column.accessor && (
-                sortDirection === 'asc' ? <IconSortAscending size={12} /> : <IconSortDescending size={12} />
+                sortDirection === 'asc' ? 
+                  <IconSortAscending key={`asc-${column.accessor}`} size={12} /> : 
+                  <IconSortDescending key={`desc-${column.accessor}`} size={12} />
               )}
             </Group>
           </UnstyledButton>
-        )}
-        {!column.sortable && (
-          <Text fw={500} size="sm" style={{ flex: 1 }}>
+        ) : (
+          <Text 
+            key={`header-text-${column.accessor}`} 
+            fw={500} 
+            size="sm" 
+            style={{ flex: 1 }}
+          >
             {children}
           </Text>
         )}
@@ -440,14 +457,14 @@ export function AdvancedTable({
   return (
     <Card withBorder radius="lg" p={13} className="advanced-table-container">
       {title && (
-        <Card.Section withBorder inheritPadding py="md">
+        <Card.Section key="table-title" withBorder inheritPadding py="md">
           <Title order={4}>{title}</Title>
         </Card.Section>
       )}
       
       {/* Cabeçalho fixo com indicador de filtros ativos */}
       {hasActiveFilters && (
-        <Card.Section p="xs" >
+        <Card.Section key="active-filters" p="xs" >
           <Group justify="center">
             <Group gap="xs">
               <Text size="sm" c="dimmed">
@@ -487,7 +504,7 @@ export function AdvancedTable({
                     <div>
                       <Text c="dimmed" fw={500}>{emptyStateText}</Text>
                       {emptyStateDescription && (
-                        <Text c="dimmed" size="sm" mt="xs">
+                        <Text key="empty-description" c="dimmed" size="sm" mt="xs">
                           {emptyStateDescription}
                         </Text>
                       )}
@@ -512,20 +529,20 @@ export function AdvancedTable({
         
         {/* Rodapé fixo fora do ScrollArea */}
         {footerCalculations && (
-          <div className="advanced-table-footer">
+          <div key="table-footer" className="advanced-table-footer">
             <Table>
               <Table.Tbody>
                 <Table.Tr>
                   {columns.map((column) => (
                     <Table.Td key={column.accessor} ta={column.align || 'left'} style={{ border: 'none', padding: '8px' }}>
                       {footerValues[column.accessor] ? (
-                        <Text size="sm" fw={600}>
+                        <Text key={`footer-value-${column.accessor}`} size="sm" fw={600}>
                           {typeof footerValues[column.accessor] === 'function' 
                             ? footerValues[column.accessor]() 
                             : footerValues[column.accessor]}
                         </Text>
                       ) : (column.accessor === columns[0].accessor ? (
-                        <Text size="sm" fw={600}>
+                        <Text key={`footer-count-${column.accessor}`} size="sm" fw={600}>
                           {processedData.length} registros
                         </Text>
                       ) : null)}
@@ -540,7 +557,7 @@ export function AdvancedTable({
 
       {/* Paginação */}
       {pagination && processedData.length > 0 && (
-        <Card.Section withBorder inheritPadding py="xs">
+        <Card.Section key="pagination-section" withBorder inheritPadding py="xs">
           <Group justify="space-between" align="center">
             <Group gap="sm">
               <Text size="sm" c="dimmed">
